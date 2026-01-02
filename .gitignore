@@ -1,0 +1,10 @@
+# Ignore Variable Env
+.env
+
+# Ignore folder/file trash python
+__pycache__/
+*.pyc
+
+# Ignore Local database
+chat_memory/
+temp_downloads/
