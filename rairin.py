@@ -253,7 +253,6 @@ def parse_booru_results(posts, source_name, custom_query=None):
         if isinstance(tags, str): tags = tags.lower().split()
         
         # FILTER GENDER: Only for Gacha (when custom_query is None)
-        # If Hunt mode, allow EVERYTHING (yaoi, male, etc)
         if not custom_query:
             if any(x in tags for x in ['1boy', 'otoko', 'male', 'yaoi', '2boys', 'shota']): continue
 
@@ -269,10 +268,8 @@ def parse_booru_results(posts, source_name, custom_query=None):
 
         name = "Unknown"
         if custom_query:
-            # Clean name for Hunt Mode
             name = custom_query.replace('_', ' ').replace('sort:random', '').strip().title()
         else:
-            # Name extraction for Gacha
             ignore_tags = ['1girl', 'solo', 'highres', 'long_hair', 'blush', 'smile', 'breasts', 'looking_at_viewer', 'short_hair', 'open_mouth', 'sitting', 'standing', 'simple_background', 'dress', 'thighhighs', 'skirt', 'hair_ornament', 'original', 'anime', 'absurdres', 'navel', 'cleavage', 'general', 'explicit', 'censored']
             possible_names = [t for t in tags if t not in ignore_tags and len(t) > 3]
             if possible_names: 
@@ -282,7 +279,7 @@ def parse_booru_results(posts, source_name, custom_query=None):
     return valid
 
 # ==============================================================================
-# IMAGE PROCESSING
+# IMAGE PROCESSING (ROBUST)
 # ==============================================================================
 def process_image_sync(image_url, save_path):
     try:
@@ -293,12 +290,15 @@ def process_image_sync(image_url, save_path):
         
         if not os.path.exists(save_path) or os.path.getsize(save_path) < 1000: return False
         
+        # Verify Image
         img = Image.open(save_path)
         if img.mode != 'RGB': img = img.convert('RGB')
         img.thumbnail((1800, 1800))
         img.save(save_path, "JPEG", quality=90, optimize=True)
         return True
-    except: return False
+    except Exception as e: 
+        print(f"⚠️ Image Process Error: {e}")
+        return False
 
 async def smart_send_photo(update, image_url, caption, loading_msg=None):
     if not os.path.exists(TEMP_DIR): os.makedirs(TEMP_DIR)
@@ -307,30 +307,42 @@ async def smart_send_photo(update, image_url, caption, loading_msg=None):
     temp_path = os.path.join(TEMP_DIR, f"{uuid.uuid4()}.{ext}")
     
     try:
+        # 1. Update status
         if loading_msg: 
             try: await loading_msg.edit_text("⬇️ <i>Downloading...</i>", parse_mode=ParseMode.HTML)
             except: pass
 
+        # 2. Download Sync
         loop = asyncio.get_running_loop()
         success = await loop.run_in_executor(None, lambda: process_image_sync(image_url, temp_path))
 
-        if not success: raise Exception("Download Failed")
+        if not success: 
+            raise Exception("Download Failed / Corrupt Image")
 
+        # 3. Send Photo with Fallback
+        with open(temp_path, 'rb') as f:
+            try:
+                # Try sending as photo
+                await update.message.reply_photo(photo=f, caption=caption, parse_mode=ParseMode.HTML)
+            except BadRequest:
+                # Fallback: Send as document if photo fails (size/format issue)
+                f.seek(0)
+                await update.message.reply_document(document=f, caption=caption, parse_mode=ParseMode.HTML)
+            except Exception as e:
+                raise e # Re-raise other errors
+
+        # 4. Success -> Delete loading message
         if loading_msg:
             try: await loading_msg.delete()
             except: pass
-        
-        with open(temp_path, 'rb') as f:
-            try:
-                await update.message.reply_photo(photo=f, caption=caption, parse_mode=ParseMode.HTML)
-            except BadRequest:
-                f.seek(0)
-                await update.message.reply_document(document=f, caption=caption, parse_mode=ParseMode.HTML)
+            
     except Exception as e:
-        try:
-            if loading_msg: await loading_msg.delete()
-            await update.message.reply_text(f"⚠️ Failed: {e}\n🔗 <a href='{image_url}'>Source Link</a>", parse_mode=ParseMode.HTML)
-        except: pass
+        print(f"❌ Send Error: {e}")
+        if loading_msg:
+            try: await loading_msg.edit_text(f"⚠️ <b>Failed to send image.</b>\nErr: {str(e)}\n🔗 <a href='{image_url}'>Source Link</a>", parse_mode=ParseMode.HTML)
+            except: pass
+        else:
+            await update.message.reply_text(f"⚠️ Failed: {e}\n🔗 <a href='{image_url}'>Link</a>", parse_mode=ParseMode.HTML)
     finally:
         if os.path.exists(temp_path): os.remove(temp_path)
 
@@ -798,5 +810,5 @@ if __name__ == '__main__':
     
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_ai_chat))
     
-    print("✅ RAIRIN SYSTEM ONLINE PARALLEL")
+    print("✅ RAIRIN SYSTEM ONLINE AH")
     app.run_polling()
