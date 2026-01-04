@@ -42,7 +42,7 @@ else:
 
 # FILES
 DATA_FILE = 'database/database_bini.json'
-# Note: REPORTS_FILE handled dynamically in functions
+# Note: REPORTS_FILE handled dynamically
 MEMORY_DIR = 'chat_memory' 
 TEMP_DIR = 'temp_downloads' 
 
@@ -381,7 +381,7 @@ async def help_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "⚙️ <b>System</b>\n"
         "• <code>/afk [reason]</code> - Set auto-reply\n"
         "• <code>/report [msg]</code> - Report bugs\n"
-        "• <code>/feedback</code> - Check reports\n"
+        "• <code>/feedback</code> - Check reports (Owner Only)\n"
     )
     await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
 
@@ -431,6 +431,11 @@ async def report_bug(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"✅ <b>Report Saved!</b>\nID: <code>{rep_id}</code>\nThanks for your feedback.", parse_mode=ParseMode.HTML)
 
 async def feedback_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # EXCLUSIVE CHECK
+    if update.effective_user.username != "kaminarich":
+        await update.message.reply_text("⛔ <b>Access Denied.</b> Owner only.", parse_mode=ParseMode.HTML)
+        return
+
     file_path = get_reports_path()
     
     if not os.path.exists(file_path):
@@ -449,8 +454,13 @@ async def feedback_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     txt = f"📋 <b>REPORT LIST ({len(reports)} Total)</b>\n\n"
-    for r in reports[-5:]: 
-        txt += f"🆔 <b>{r['id']}</b> | 📅 {r['date']}\n👤 {r['user']}\n💬 <i>{r['msg']}</i>\n{'-'*15}\n"
+    for r in reports[-5:]:
+        # SAFE GET to avoid KeyErrors
+        r_id = r.get('id', '???')
+        r_date = r.get('date', '-')
+        r_user = r.get('user', 'Unknown')
+        r_msg = r.get('msg', '(No Msg)')
+        txt += f"🆔 <b>{r_id}</b> | 📅 {r_date}\n👤 {r_user}\n💬 <i>{r_msg}</i>\n{'-'*15}\n"
     
     txt += "\n<i>Options:</i>"
     
@@ -460,6 +470,11 @@ async def feedback_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
+    
+    if q.from_user.username != "kaminarich":
+        await q.answer("⛔ Access Denied!", show_alert=True)
+        return
+
     file_path = get_reports_path()
 
     if q.data == "fb_clear":
@@ -868,5 +883,5 @@ if __name__ == '__main__':
     app.add_handler(MessageHandler(filters.Regex(r'^/mybini\d+$'), my_bini_detail))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_ai_chat))
     
-    print("ALL SYSTEMS ONLINE")
+    print("ALL SYSTEMS ONLINE NOW")
     app.run_polling()
