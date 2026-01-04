@@ -57,7 +57,7 @@ PENDING_TRADES = {}
 # Logging Setup
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# Cloudscraper Instance (Fixed User Agent for Rule34/Gelbooru)
+# Cloudscraper Instance (User Agent Fixed)
 scraper = cloudscraper.create_scraper(
     browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
 )
@@ -79,17 +79,21 @@ CORE DIRECTIVES:
 """
 
 # ==============================================================================
-# SOURCE CONFIG & TAGS
+# SOURCE CONFIG (TRUE SEARCH ENGINE)
 # ==============================================================================
 SOURCES_CONFIG = [
+    # NSFW / Heavy Databases
     {"name": "Rule34", "url": "https://api.rule34.xxx/index.php?page=dapi&s=post&q=index&json=1", "type": "gelbooru", "param_page": "pid"},
     {"name": "Gelbooru", "url": "https://gelbooru.com/index.php?page=dapi&s=post&q=index&json=1", "type": "gelbooru", "param_page": "pid"},
+    # High Res / Specific
     {"name": "Yande.re", "url": "https://yande.re/post.json", "type": "moe", "param_page": "page"},
     {"name": "Konachan", "url": "https://konachan.net/post.json", "type": "moe", "param_page": "page"},
     {"name": "Lolibooru", "url": "https://lolibooru.moe/post/index.json", "type": "moe", "param_page": "page"},
+    # Safe / Backup
     {"name": "Safebooru", "url": "https://safebooru.org/index.php?page=dapi&s=post&q=index&json=1", "type": "gelbooru", "param_page": "pid"},
 ]
 
+# Themes for Gacha (Random)
 BOORU_THEMES = [
     "genshin_impact", "blue_archive", "honkai:_star_rail", "azur_lane", "fate/grand_order", 
     "arknights", "hololive", "touhou", "wuthering_waves", "nikke:_goddess_of_victory", 
@@ -100,7 +104,7 @@ BOORU_THEMES = [
     "silver_hair", "blonde_hair", "pink_hair", "blue_hair", "cat_ears", "fox_ears"
 ]
 
-WAIFU_TAGS = ['maid', 'waifu', 'marin-kitagawa', 'mori-calliope', 'raiden-shogun', 'oppai', 'selfies', 'kamisato-ayaka', 'uniform', 'ass', 'hentai', 'milf', 'oral', 'paizuri', 'ecchi']
+WAIFU_TAGS = ['maid', 'waifu', 'marin-kitagawa', 'mori-calliope', 'raiden-shogun', 'oppai', 'selfies', 'kamisato-ayaka', 'uniform', 'ass', 'hentai', 'milf', 'oral', 'paizuri', 'ecchi', 'ero']
 
 # ==============================================================================
 # DATABASE & FILE UTILS
@@ -158,59 +162,63 @@ async def async_get_request(url, params=None):
     return await loop.run_in_executor(None, lambda: scraper.get(url, params=params, timeout=15))
 
 # ==============================================================================
-# PARALLEL FETCHING ENGINE
+# FETCHING ENGINE (TRUE SEARCH)
 # ==============================================================================
 async def fetch_master_source(custom_tags=None):
+    tasks = []
+    
     if custom_tags:
-        # HUNT MODE: Parallel Fetch from ALL sources
-        cleaned_tags = custom_tags.replace(',', ' ').strip()
-        print(f"🔎 HUNTING: {cleaned_tags} (Parallel)")
-        booru_query = f"{cleaned_tags} sort:random"
+        # --- MODE SEARCH / HUNT ---
+        raw_query = custom_tags.strip()
+        print(f"🔎 HUNTING: '{raw_query}' on ALL sources...")
         
-        tasks = [fetch_single_source(src, booru_query, limit=30) for src in SOURCES_CONFIG]
-        results_list = await asyncio.gather(*tasks)
+        # 1. Format Query for Booru (spaces to underscores)
+        booru_query = raw_query.replace(' ', '_') + " sort:random"
         
-        all_candidates = []
-        for res in results_list:
-            if res: all_candidates.extend(res)
+        # 2. Fire requests to ALL sources
+        for src in SOURCES_CONFIG:
+            tasks.append(fetch_single_source(src, booru_query, limit=30))
             
-        unique_map = {c['image']: c for c in all_candidates}
-        final_pool = list(unique_map.values())
-        
-        return random.choice(final_pool) if final_pool else None
+        # 3. Check Waifu.im if applicable
+        matched_waifu_tag = next((t for t in WAIFU_TAGS if t in raw_query.lower()), None)
+        if matched_waifu_tag:
+            tasks.append(fetch_specific_waifu_im(matched_waifu_tag))
 
     else:
-        # GACHA MODE: Weighted RNG
+        # --- MODE GACHA (RANDOM) ---
         if random.random() < 0.7:
             src = random.choice(SOURCES_CONFIG)
             theme = random.choice(BOORU_THEMES)
             query = f"{theme} 1girl -1boy -shota -otoko -male sort:random"
-            
-            candidates = await fetch_single_source(src, query, limit=20, random_page=True)
-            if candidates: return random.choice(candidates)
-            return await fetch_from_waifu_im()
+            tasks.append(fetch_single_source(src, query, limit=20, random_page=True))
         else:
-            res = await fetch_from_waifu_im()
-            if res: return res
-            
-            # Fallback
-            src = random.choice(SOURCES_CONFIG)
-            theme = random.choice(BOORU_THEMES)
-            query = f"{theme} 1girl sort:random"
-            cands = await fetch_single_source(src, query, limit=20)
-            return random.choice(cands) if cands else None
+            tasks.append(fetch_from_waifu_im_random())
+
+    # --- EXECUTE PARALLEL ---
+    results_list = await asyncio.gather(*tasks)
+    
+    # --- MERGE RESULTS ---
+    all_candidates = []
+    for res in results_list:
+        if res: all_candidates.extend(res)
+    
+    # Remove duplicates
+    unique_map = {c['image']: c for c in all_candidates}
+    final_pool = list(unique_map.values())
+    
+    print(f"✅ Total Results: {len(final_pool)}")
+    
+    return random.choice(final_pool) if final_pool else None
 
 async def fetch_single_source(src, query, limit=20, random_page=False):
     try:
-        if src['name'] == 'Safebooru' and any(x in query.lower() for x in ['hentai', 'anal', 'sex', 'pussy', 'nude']):
-            return []
-
         page_num = random.randint(0, 40) if random_page else 0
         params = {"tags": query, "limit": limit, "json": 1, src['param_page']: page_num}
         
         resp = await async_get_request(src['url'], params)
         if resp.status_code == 200:
             data = resp.json()
+            # Normalize Gelbooru
             if src['type'] == 'gelbooru' and isinstance(data, dict):
                 if 'post' in data: data = data['post']
                 elif 'posts' in data: data = data['posts']
@@ -221,16 +229,22 @@ async def fetch_single_source(src, query, limit=20, random_page=False):
     except: pass
     return []
 
-async def fetch_from_waifu_im():
+async def fetch_specific_waifu_im(tag):
     try:
-        w_tag = random.choice(WAIFU_TAGS)
-        params = {'included_tags': [w_tag], 'is_nsfw': 'true', 'many': 'true'}
+        params = {'included_tags': [tag], 'is_nsfw': 'true', 'many': 'true'}
         resp = await async_get_request("https://api.waifu.im/search", params)
         if resp.status_code == 200:
             data = resp.json()
-            if 'images' in data: return random.choice(parse_waifu_results(data['images'], w_tag))
+            if 'images' in data: 
+                return [{"image": i['url'], "name": tag.title(), "source": "Waifu.im", "link": i['url']} for i in data['images']]
     except: pass
-    return None
+    return []
+
+async def fetch_from_waifu_im_random():
+    try:
+        w_tag = random.choice(WAIFU_TAGS)
+        return await fetch_specific_waifu_im(w_tag)
+    except: return []
 
 def parse_booru_results(posts, source_name, custom_query=None):
     valid = []
@@ -238,7 +252,8 @@ def parse_booru_results(posts, source_name, custom_query=None):
         tags = post.get('tags', '')
         if isinstance(tags, str): tags = tags.lower().split()
         
-        # Only filter genders in Gacha Mode
+        # FILTER GENDER: Only for Gacha (when custom_query is None)
+        # If Hunt mode, allow EVERYTHING (yaoi, male, etc)
         if not custom_query:
             if any(x in tags for x in ['1boy', 'otoko', 'male', 'yaoi', '2boys', 'shota']): continue
 
@@ -253,20 +268,18 @@ def parse_booru_results(posts, source_name, custom_query=None):
         if ext not in ['jpg', 'jpeg', 'png', 'webp']: continue
 
         name = "Unknown"
-        ignore_tags = ['1girl', 'solo', 'highres', 'long_hair', 'blush', 'smile', 'breasts', 'looking_at_viewer', 'short_hair', 'open_mouth', 'sitting', 'standing', 'simple_background', 'dress', 'thighhighs', 'skirt', 'hair_ornament', 'original', 'anime', 'absurdres', 'navel', 'cleavage', 'general', 'explicit', 'censored']
-        
-        possible_names = [t for t in tags if t not in ignore_tags and len(t) > 3]
-        if possible_names: 
-            name = possible_names[0].replace('_', ' ').replace('(', '').replace(')', '').title()
-        
-        if custom_query and (name == "Unknown" or name.lower() in custom_query.lower()):
-            name = custom_query.replace('_', ' ').title()
+        if custom_query:
+            # Clean name for Hunt Mode
+            name = custom_query.replace('_', ' ').replace('sort:random', '').strip().title()
+        else:
+            # Name extraction for Gacha
+            ignore_tags = ['1girl', 'solo', 'highres', 'long_hair', 'blush', 'smile', 'breasts', 'looking_at_viewer', 'short_hair', 'open_mouth', 'sitting', 'standing', 'simple_background', 'dress', 'thighhighs', 'skirt', 'hair_ornament', 'original', 'anime', 'absurdres', 'navel', 'cleavage', 'general', 'explicit', 'censored']
+            possible_names = [t for t in tags if t not in ignore_tags and len(t) > 3]
+            if possible_names: 
+                name = possible_names[0].replace('_', ' ').replace('(', '').replace(')', '').title()
 
         valid.append({"image": img_url, "name": name, "source": source_name, "link": img_url})
     return valid
-
-def parse_waifu_results(images, tag):
-    return [{"image": i['url'], "name": f"Random {tag.replace('-', ' ').title()}", "source": "Waifu.im", "link": i['url']} for i in images if i.get('url')]
 
 # ==============================================================================
 # IMAGE PROCESSING
@@ -331,13 +344,12 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(user.id)
     db = load_data()
     
-    # Auto-Register
     if uid in db["users"]:
         db["users"][uid]["handle"] = user.username
         db["users"][uid]["username"] = user.first_name
         save_data(db)
     
-    # AFK Checks
+    # AFK Logic
     if uid in db["users"] and db["users"][uid].get("afk_status"):
         db["users"][uid]["afk_status"] = False
         save_data(db)
@@ -371,7 +383,7 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if user_msg.startswith('/'): return
     
-    # AI Trigger
+    # AI Logic
     is_reply = update.message.reply_to_message and update.message.reply_to_message.from_user.is_bot
     is_mention = "rairin" in user_msg.lower()
     
@@ -786,5 +798,5 @@ if __name__ == '__main__':
     
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_ai_chat))
     
-    print("✅ RAIRIN SYSTEM ONLINE")
+    print("✅ RAIRIN SYSTEM ONLINE PARALLEL")
     app.run_polling()
