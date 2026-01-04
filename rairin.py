@@ -32,10 +32,6 @@ try:
 except ValueError:
     ALLOWED_GROUP_ID = 0
 
-# PIXELDRAIN CONFIG (Optional for fallback)
-PIXELDRAIN_API_KEY = os.getenv("PIXELDRAIN_KEY")
-PIXELDRAIN_API_URL = "https://pixeldrain.com/api/file"
-
 # GROQ KEYS (AI)
 groq_env = os.getenv("GROQ_KEYS_LIST")
 if groq_env:
@@ -46,7 +42,7 @@ else:
 
 # FILES
 DATA_FILE = 'database/database_bini.json'
-REPORTS_FILE = 'database/reports.json'
+# Note: REPORTS_FILE handled dynamically in functions
 MEMORY_DIR = 'chat_memory' 
 TEMP_DIR = 'temp_downloads' 
 
@@ -133,16 +129,13 @@ async def async_get_request(url, params=None):
 def parse_general_results(posts, source_name):
     valid = []
     for post in posts:
-        # Filter tags
         tags = post.get('tag_string', post.get('tags', ''))
         if isinstance(tags, str): tags = tags.lower().split()
         if any(x in tags for x in ['1boy', 'otoko', 'male', 'yaoi', '2boys', 'shota']): continue
 
-        # Detect URL
         img_url = post.get('file_url') or post.get('large_file_url') or post.get('sample_url')
         if not img_url: continue
         
-        # Protocol fix
         if not img_url.startswith('http'):
             if source_name == 'Safebooru': img_url = "https://safebooru.org/images/" + img_url.split('/')[-1]
             elif source_name == 'Gelbooru': img_url = post.get('file_url') 
@@ -151,7 +144,6 @@ def parse_general_results(posts, source_name):
         ext = img_url.split('.')[-1].split('?')[0].lower()
         if ext not in ['jpg', 'jpeg', 'png', 'webp']: continue
 
-        # Determine Name
         name = "Unknown"
         char_tags = post.get('tag_string_character', '').split()
         if char_tags: 
@@ -171,11 +163,9 @@ async def fetch_master_source(specific_tags=None):
     candidates = []
     print(f"🔍 Scanning Sources... (Query: {specific_tags if specific_tags else 'Random'})")
     
-    # 1. BOORU SITES
     if specific_tags:
         query = f"{specific_tags} -1boy -shota -otoko"
     else:
-        # 50:50 chance Theme vs Generic
         if random.random() > 0.5:
             theme = random.choice(BOORU_THEMES)
             query = f"{theme} 1girl -1boy -shota order:random"
@@ -203,7 +193,6 @@ async def fetch_master_source(specific_tags=None):
                     candidates.extend(parse_general_results(data, src['name']))
         except: pass
 
-    # 2. WAIFU.IM (Complementary)
     if len(candidates) < 5 or not specific_tags:
         try:
             w_tag = random.choice(WAIFU_TAGS)
@@ -278,7 +267,7 @@ async def smart_send_photo(update, image_url, caption, loading_msg=None):
         if os.path.exists(temp_path): os.remove(temp_path)
 
 # ==========================================
-# 3. AI HANDLER & AFK SYSTEM
+# 3. AI HANDLER
 # ==========================================
 async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_msg = update.message.text
@@ -292,13 +281,12 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         db["users"][uid]["username"] = user.first_name
         save_data(db)
     
-    # CHECK 1: AM I AFK?
+    # AFK Logic
     if uid in db["users"] and db["users"][uid].get("afk_status"):
         db["users"][uid]["afk_status"] = False
         save_data(db)
         await update.message.reply_text(f"👋 Welcome back <b>{user.first_name}</b>! AFK mode disabled.", parse_mode=ParseMode.HTML)
 
-    # CHECK 2: IS TARGET AFK?
     afk_targets = set()
     if update.message.reply_to_message:
         target_id = str(update.message.reply_to_message.from_user.id)
@@ -397,51 +385,74 @@ async def help_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
 
-# --- REPORT SYSTEM ---
+# --- ROBUST REPORT SYSTEM ---
+def get_reports_path():
+    if not os.path.exists('database'):
+        os.makedirs('database')
+    return 'database/reports.json'
+
 def save_report_local(report_data):
-    ensure_directory_exists(REPORTS_FILE)
+    file_path = get_reports_path()
     reports = []
-    if os.path.exists(REPORTS_FILE):
+    
+    if os.path.exists(file_path):
         try:
-            with open(REPORTS_FILE, 'r') as f: reports = json.load(f)
-        except: pass
+            with open(file_path, 'r') as f:
+                content = f.read()
+                if content.strip(): 
+                    reports = json.loads(content)
+        except json.JSONDecodeError:
+            reports = []
+
     reports.append(report_data)
-    if len(reports) > 50: reports.pop(0)
-    with open(REPORTS_FILE, 'w') as f: json.dump(reports, f, indent=4)
+    
+    with open(file_path, 'w') as f:
+        json.dump(reports, f, indent=4)
 
 async def report_bug(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     msg_content = " ".join(context.args)
     if not msg_content:
-        await update.message.reply_text("⚠️ Usage: `/report <message>`\nExample: `/report Rairin error`", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("⚠️ <b>Format Error!</b>\nUse: <code>/report your message</code>", parse_mode=ParseMode.HTML)
         return
         
     rep_id = str(uuid.uuid4())[:6]
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    
     data = {
         "id": rep_id,
-        "date": datetime.now().strftime("%Y-%m-%d %H:%M"),
-        "user": f"{user.first_name} (@{user.username})",
+        "date": timestamp,
         "uid": user.id,
+        "user": f"{user.first_name} (@{user.username or 'NoUser'})",
         "msg": msg_content
     }
+    
     save_report_local(data)
-    await update.message.reply_text(f"✅ <b>Report Saved!</b> ID: <code>{rep_id}</code>\nThanks for the feedback.", parse_mode=ParseMode.HTML)
+    await update.message.reply_text(f"✅ <b>Report Saved!</b>\nID: <code>{rep_id}</code>\nThanks for your feedback.", parse_mode=ParseMode.HTML)
 
 async def feedback_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not os.path.exists(REPORTS_FILE):
-        await update.message.reply_text("📂 No reports found.")
-        return
-    try:
-        with open(REPORTS_FILE, 'r') as f: reports = json.load(f)
-    except: reports = []
+    file_path = get_reports_path()
     
-    if not reports:
-        await update.message.reply_text("📂 No reports found.")
+    if not os.path.exists(file_path):
+        await update.message.reply_text("📂 <b>Empty.</b> No reports found.", parse_mode=ParseMode.HTML)
         return
 
-    txt = "📋 <b>REPORT LIST</b>\n\n"
-    for r in reports[-10:]:
-        txt += f"🆔 <code>{r['id']}</code> | 👤 {r['user']}\n📝 {r['msg']}\n\n"
+    try:
+        with open(file_path, 'r') as f:
+            reports = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        await update.message.reply_text("📂 <b>Empty.</b> (File Error)", parse_mode=ParseMode.HTML)
+        return
+
+    if not reports:
+        await update.message.reply_text("📂 <b>Empty.</b> No reports found.", parse_mode=ParseMode.HTML)
+        return
+
+    txt = f"📋 <b>REPORT LIST ({len(reports)} Total)</b>\n\n"
+    for r in reports[-5:]: 
+        txt += f"🆔 <b>{r['id']}</b> | 📅 {r['date']}\n👤 {r['user']}\n💬 <i>{r['msg']}</i>\n{'-'*15}\n"
+    
+    txt += "\n<i>Options:</i>"
     
     kb = [[InlineKeyboardButton("📥 Download JSON", callback_data="fb_down"), InlineKeyboardButton("🗑️ Clear All", callback_data="fb_clear")]]
     await update.message.reply_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
@@ -449,20 +460,23 @@ async def feedback_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
+    file_path = get_reports_path()
+
     if q.data == "fb_clear":
-        if os.path.exists(REPORTS_FILE): os.remove(REPORTS_FILE)
-        await q.edit_message_text("🗑️ All reports deleted.")
+        with open(file_path, 'w') as f: json.dump([], f)
+        await q.edit_message_text("🗑️ <b>All reports cleared.</b>", parse_mode=ParseMode.HTML)
+        
     elif q.data == "fb_down":
-        if os.path.exists(REPORTS_FILE):
-            await q.message.reply_document(document=open(REPORTS_FILE, 'rb'), caption="📂 Full Report Log")
+        if os.path.exists(file_path):
+            await q.message.reply_document(document=open(file_path, 'rb'), caption="📂 <b>Full Report Log</b>", parse_mode=ParseMode.HTML)
         else:
             await q.edit_message_text("❌ File not found.")
 
-# --- HUNT COMMAND ---
+# --- HUNT & GACHA ---
 async def hunt_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keywords = " ".join(context.args)
     if not keywords:
-        await update.message.reply_text("⚠️ Usage: `/hunt <keywords>`\nExample: `/hunt hatsune miku`", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("⚠️ Usage: `/hunt <keywords>`", parse_mode=ParseMode.MARKDOWN)
         return
 
     msg = await update.message.reply_text(f"🏹 <b>Hunting:</b> <i>{keywords}</i>...", parse_mode=ParseMode.HTML)
@@ -474,7 +488,6 @@ async def hunt_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await msg.edit_text(f"❌ Nothing found for: <b>{keywords}</b>", parse_mode=ParseMode.HTML)
 
-# --- GACHA CORE ---
 async def get_bini(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ALLOWED_GROUP_ID != 0 and update.effective_chat.id != ALLOWED_GROUP_ID: return
     user = update.effective_user
@@ -512,6 +525,7 @@ async def get_bini(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await msg.edit_text("⚠️ <b>Gacha failed.</b> No bini found.", parse_mode=ParseMode.HTML)
 
+# --- COLLECTION ---
 async def my_bini_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
     db = load_data()
@@ -594,7 +608,7 @@ async def set_bini_favorite(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"⭐ <b>{found['name']}</b> set as favorite!", parse_mode=ParseMode.HTML)
         else: await update.message.reply_text("ID not found in your collection.")
 
-# --- BATTLE SYSTEM ---
+# --- BATTLE & SOCIAL ---
 async def battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try: bid = int(context.args[0])
     except: 
@@ -657,7 +671,6 @@ async def battle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(res, parse_mode=ParseMode.HTML)
         del PENDING_BATTLES[msg_id]
 
-# --- SOCIAL ACTIONS (DIVORCE/SWING) ---
 async def divorce_waifu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2:
         await update.message.reply_text("⚠️ Usage: `/divorce <bini_ID> <username_target>`")
@@ -798,7 +811,7 @@ async def swing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     del PENDING_TRADES[trade_id]
     await q.edit_message_text(f"🤝 <b>SWING SUCCESS!</b>\n{trade['c1']['name']} ⇆ {trade['c2']['name']}", parse_mode=ParseMode.HTML)
 
-# --- UTILITY ---
+# --- SYSTEM UTILS ---
 async def set_afk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reason = " ".join(context.args) if context.args else "Busy"
     user = update.effective_user
@@ -829,35 +842,29 @@ if __name__ == '__main__':
 
     app = ApplicationBuilder().token(TOKEN).build()
     
-    # Core
     app.add_handler(CommandHandler('start', start_bot))
     app.add_handler(CommandHandler('help', help_bot))
     app.add_handler(CommandHandler('checkid', check_id))
     app.add_handler(CommandHandler('afk', set_afk))
+    app.add_handler(CommandHandler('leaderboard', leaderboard))
     
-    # Gacha
     app.add_handler(CommandHandler('getbini', get_bini))
     app.add_handler(CommandHandler('mybini', my_bini_list))
     app.add_handler(CommandHandler('bini', set_bini_favorite))
-    app.add_handler(CommandHandler('leaderboard', leaderboard))
-    app.add_handler(CallbackQueryHandler(bini_pagination, pattern='^bini_page_'))
     
-    # Battle
-    app.add_handler(CommandHandler('battle', battle))
-    app.add_handler(CallbackQueryHandler(battle_callback, pattern='^(accept_battle|sel_)'))
-    
-    # New Features
     app.add_handler(CommandHandler('hunt', hunt_images))
     app.add_handler(CommandHandler('divorce', divorce_waifu))
     app.add_handler(CommandHandler('swing', swing_waifu))
+    app.add_handler(CommandHandler('battle', battle))
     app.add_handler(CommandHandler('report', report_bug))
     app.add_handler(CommandHandler('feedback', feedback_list))
     
+    app.add_handler(CallbackQueryHandler(bini_pagination, pattern='^bini_page_'))
+    app.add_handler(CallbackQueryHandler(battle_callback, pattern='^(accept_battle|sel_)'))
     app.add_handler(CallbackQueryHandler(divorce_callback, pattern='^div_'))
     app.add_handler(CallbackQueryHandler(swing_callback, pattern='^swing_'))
     app.add_handler(CallbackQueryHandler(feedback_callback, pattern='^fb_'))
     
-    # AI & Details
     app.add_handler(MessageHandler(filters.Regex(r'^/mybini\d+$'), my_bini_detail))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_ai_chat))
     
