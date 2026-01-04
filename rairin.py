@@ -469,10 +469,16 @@ async def feedback_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    await q.answer()
+    
+    # SAFETY: Handle "Query too old"
+    try:
+        await q.answer()
+    except BadRequest:
+        pass 
     
     if q.from_user.username != "kaminarich":
-        await q.answer("⛔ Access Denied!", show_alert=True)
+        try: await q.answer("⛔ Access Denied!", show_alert=True)
+        except: pass
         return
 
     file_path = get_reports_path()
@@ -586,7 +592,13 @@ async def show_bini_page(update, uid, page):
 
 async def bini_pagination(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    await q.answer()
+    
+    # SAFETY: Handle "Query too old"
+    try:
+        await q.answer()
+    except BadRequest:
+        pass 
+        
     parts = q.data.split('_')
     await show_bini_page(update, parts[3], int(parts[2]))
 
@@ -646,19 +658,29 @@ async def battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def battle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    await q.answer()
+    
+    # SAFETY: Handle "Query too old"
+    try:
+        await q.answer()
+    except BadRequest:
+        pass 
+        
     msg_id = q.message.message_id
     user = q.from_user
     uid = str(user.id)
+    
     if msg_id not in PENDING_BATTLES:
-        await q.edit_message_text("⚠️ Battle expired.")
+        try: await q.edit_message_text("⚠️ Battle expired.")
+        except: pass
         return
+        
     data = PENDING_BATTLES[msg_id]
     if q.data == "accept_battle":
         if uid == data['p1_id']: return
         db = load_data()
         if uid not in db["users"] or not db["users"][uid]["collection"]:
-            await q.answer("You have no waifus!", show_alert=True)
+            try: await q.answer("You have no waifus!", show_alert=True)
+            except: pass
             return
         kb = []
         for c in db["users"][uid]["collection"][-5:]: 
@@ -728,7 +750,13 @@ async def divorce_waifu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def divorce_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    await q.answer()
+    
+    # SAFETY: Handle "Query too old"
+    try:
+        await q.answer()
+    except BadRequest:
+        pass 
+        
     data = q.data.split('_')
     if data[1] == 'n':
         await q.edit_message_text("❌ Cancelled.")
@@ -751,80 +779,164 @@ async def divorce_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     rec_name = db["users"][receiver_id].get("username", "User")
     await q.edit_message_text(f"💔 <b>DIVORCE SUCCESSFUL</b>\n<b>{char['name']}</b> sent to <b>{rec_name}</b>.", parse_mode=ParseMode.HTML)
 
+# --- SWING (TRADE) WITH MENTION FIX ---
 async def swing_waifu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Syntax: /swing <my_id> <target_id>
     if len(context.args) < 2:
-        await update.message.reply_text("⚠️ Usage: `/swing <my_bini_ID> <target_bini_ID>`")
+        await update.message.reply_text("⚠️ Usage: `/swing <my_bini_ID> <target_bini_ID>`", parse_mode=ParseMode.MARKDOWN)
         return
+
     try:
         my_bid = int(context.args[0])
         target_bid = int(context.args[1])
-    except: return
+    except ValueError:
+        await update.message.reply_text("⚠️ IDs must be numbers.")
+        return
 
     uid = str(update.effective_user.id)
     db = load_data()
+
+    # 1. Cek User Sendiri
+    if uid not in db["users"]: 
+        return
+        
     my_char = next((x for x in db["users"][uid]["collection"] if x['id'] == my_bid), None)
     if not my_char:
         await update.message.reply_text(f"❌ You don't own ID: {my_bid}")
         return
 
-    target_owner_id, target_char = None, None
+    # 2. Cek Target Bini & Ownernya
+    target_owner_id = None
+    target_char = None
+    
+    # Scan database user lain
     for duid, ddata in db["users"].items():
         found = next((x for x in ddata["collection"] if x['id'] == target_bid), None)
         if found:
-            target_owner_id, target_char = duid, found
+            target_owner_id = duid
+            target_char = found
             break
             
-    if not target_char or target_owner_id == uid:
-        await update.message.reply_text(f"❌ Invalid target.")
+    if not target_char:
+        await update.message.reply_text(f"❌ Target ID: {target_bid} not found in anyone's collection.")
+        return
+        
+    if target_owner_id == uid:
+        await update.message.reply_text("🤪 You can't trade with yourself!")
         return
 
+    # 3. Buat Tag/Mention ke Target
+    target_data = db["users"][target_owner_id]
+    target_name = target_data.get("username", "Unknown User")
+    target_handle = target_data.get("handle")
+
+    # Logic Mention: Kalau ada username pakai @, kalau tidak pakai text link
+    if target_handle:
+        mention_text = f"@{target_handle}"
+    else:
+        # Fallback ke ID mention kalau user tidak punya username
+        mention_text = f"<a href='tg://user?id={target_owner_id}'>{target_name}</a>"
+
+    # 4. Simpan State Trade
     trade_id = str(uuid.uuid4())[:8]
     PENDING_TRADES[trade_id] = {
-        "p1": uid, "p1_name": update.effective_user.first_name, "c1": my_char,
-        "p2": target_owner_id, "p2_name": db["users"][target_owner_id].get("username", "Target"), "c2": target_char
+        "p1": uid, 
+        "p1_name": update.effective_user.first_name, 
+        "c1": my_char,
+        "p2": target_owner_id, 
+        "p2_name": target_name, 
+        "c2": target_char
     }
 
-    kb = [[InlineKeyboardButton("✅ ACCEPT", callback_data=f"swing_ok_{trade_id}"), InlineKeyboardButton("❌ REJECT", callback_data=f"swing_no_{trade_id}")]]
-    await update.message.reply_text(
-        f"🔄 <b>SWING REQUEST</b>\n{update.effective_user.first_name} offers {my_char['name']} (ID:{my_bid}) for {target_char['name']} (ID:{target_bid}).",
-        reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML
+    # 5. Kirim Pesan dengan Mention
+    kb = [
+        [
+            InlineKeyboardButton("✅ ACCEPT TRADE", callback_data=f"swing_ok_{trade_id}"), 
+            InlineKeyboardButton("❌ REJECT", callback_data=f"swing_no_{trade_id}")
+        ]
+    ]
+    
+    msg_txt = (
+        f"🔄 <b>SWING / TRADE REQUEST</b>\n\n"
+        f"👤 <b>{update.effective_user.first_name}</b> offers:\n"
+        f"🔹 <b>{my_char['name']}</b> (ID: {my_bid})\n\n"
+        f"To {mention_text} for:\n"
+        f"🔸 <b>{target_char['name']}</b> (ID: {target_bid})\n\n"
+        f"🔔 <i>{mention_text}, please decide!</i>"
     )
+    
+    await update.message.reply_text(msg_txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+
 
 async def swing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    await q.answer()
+    
+    # SAFETY: Handle "Query too old"
+    try:
+        await q.answer()
+    except BadRequest:
+        pass 
+
     data = q.data.split('_')
     action, trade_id = data[1], data[2]
-    if trade_id not in PENDING_TRADES:
-        await q.edit_message_text("⚠️ Expired.")
-        return
-    trade = PENDING_TRADES[trade_id]
-    if str(q.from_user.id) != trade['p2']: return
 
+    if trade_id not in PENDING_TRADES:
+        try: await q.edit_message_text("⚠️ Trade offer expired or already completed.")
+        except: pass
+        return
+
+    trade = PENDING_TRADES[trade_id]
+    
+    # Validasi: Hanya Target (P2) yang boleh Accept/Reject
+    if str(q.from_user.id) != trade['p2']:
+        try: await q.answer("⚠️ Not your trade request!", show_alert=True)
+        except: pass
+        return
+
+    # REJECT FLOW
     if action == 'no':
-        await q.edit_message_text(f"❌ Rejected by {q.from_user.first_name}.")
+        try: await q.edit_message_text(f"❌ Trade rejected by {q.from_user.first_name}.")
+        except: pass
         del PENDING_TRADES[trade_id]
         return
 
+    # ACCEPT FLOW - Execute Trade
     db = load_data()
+    
+    # Cek ulang kepemilikan (siapa tau udah dijual pas nunggu accept)
     p1_has = next((x for x in db["users"][trade['p1']]["collection"] if x['id'] == trade['c1']['id']), None)
     p2_has = next((x for x in db["users"][trade['p2']]["collection"] if x['id'] == trade['c2']['id']), None)
 
     if not p1_has or not p2_has:
-        await q.edit_message_text("❌ Failed.")
+        try: await q.edit_message_text("❌ Trade failed. Item no longer available.")
+        except: pass
+        del PENDING_TRADES[trade_id]
         return
 
+    # Lakukan Swap
+    # Hapus dari pemilik lama
     db["users"][trade['p1']]["collection"].remove(p1_has)
     db["users"][trade['p2']]["collection"].remove(p2_has)
+    
+    # Masukkan ke pemilik baru
     db["users"][trade['p1']]["collection"].append(p2_has)
     db["users"][trade['p2']]["collection"].append(p1_has)
     
+    # Reset favorite jika item yang ditrade adalah favorite
     if db["users"][trade['p1']].get("favorite_id") == trade['c1']['id']: db["users"][trade['p1']]["favorite_id"] = None
     if db["users"][trade['p2']].get("favorite_id") == trade['c2']['id']: db["users"][trade['p2']]["favorite_id"] = None
 
     save_data(db)
     del PENDING_TRADES[trade_id]
-    await q.edit_message_text(f"🤝 <b>SWING SUCCESS!</b>\n{trade['c1']['name']} ⇆ {trade['c2']['name']}", parse_mode=ParseMode.HTML)
+    
+    try:
+        await q.edit_message_text(
+            f"🤝 <b>TRADE SUCCESSFUL!</b>\n\n"
+            f"👤 {trade['p1_name']} got <b>{trade['c2']['name']}</b>\n"
+            f"👤 {trade['p2_name']} got <b>{trade['c1']['name']}</b>", 
+            parse_mode=ParseMode.HTML
+        )
+    except: pass
 
 # --- SYSTEM UTILS ---
 async def set_afk(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -883,5 +995,5 @@ if __name__ == '__main__':
     app.add_handler(MessageHandler(filters.Regex(r'^/mybini\d+$'), my_bini_detail))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_ai_chat))
     
-    print("ALL SYSTEMS ONLINE NOW")
+    print("ALL SYSTEMS ONLINE")
     app.run_polling()
