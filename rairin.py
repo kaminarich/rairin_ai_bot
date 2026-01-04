@@ -14,76 +14,95 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, CallbackQueryHandler, filters
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
-
-# --- LOAD ENVIRONMENT VARIABLES ---
 from dotenv import load_dotenv
-load_dotenv()
-
-# Disable SSL Warnings
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
-# --- AI LIBRARY ---
 from groq import Groq
 
-# --- CONFIGURATION (FROM .ENV) ---
+# Load environment variables
+load_dotenv()
+
+# Suppress InsecureRequestWarning for legacy endpoints
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# ==============================================================================
+# CONFIGURATION
+# ==============================================================================
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 try:
     ALLOWED_GROUP_ID = int(os.getenv("ALLOWED_GROUP_ID", "0"))
 except ValueError:
     ALLOWED_GROUP_ID = 0
 
-# PIXELDRAIN CONFIG
+# Service Configuration
 PIXELDRAIN_API_KEY = os.getenv("PIXELDRAIN_KEY")
 PIXELDRAIN_API_URL = "https://pixeldrain.com/api/file"
+ADMIN_USERNAME = "kaminarich" 
 
-# GROQ KEYS (AI)
+# AI Configuration
 groq_env = os.getenv("GROQ_KEYS_LIST")
-if groq_env:
-    GROQ_KEYS = [key.strip() for key in groq_env.split(',')]
-else:
-    GROQ_KEYS = []
+GROQ_KEYS = [key.strip() for key in groq_env.split(',')] if groq_env else []
+
+if not GROQ_KEYS:
     print("⚠️ WARNING: No Groq Keys found in .env")
 
-# FILES
+# File Paths
 DATA_FILE = 'database/database_bini.json'
+REPORTS_DB = 'database/reports.json'
 MEMORY_DIR = 'chat_memory' 
 TEMP_DIR = 'temp_downloads' 
 PENDING_BATTLES = {}
 
+# Logging Setup
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# --- INIT SCRAPER ---
+# Cloudscraper Instance
 scraper = cloudscraper.create_scraper(
     browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
 )
 
-# --- AI PERSONA ---
+# ==============================================================================
+# AI PERSONA & SYSTEM PROMPT
+# ==============================================================================
 SYSTEM_INSTRUCTION = """
-You are Rairin, texting your husband.
-STRICT RULES:
-1. **BIOLOGY:** You are 100% FEMALE. WITH PINK PUSSY only. YOU are 25 YEARS OLD WITH LOLI BODY AND BIG BOOBS.
-2. **LANGUAGE:** ENGLISH AS MAIN, BUT YOU CAN ALL LANGUAGE.
-3. **LENGTH:** ONE SENTENCE ONLY, AND MORE IF NEEDED.
-4. **NO ACTIONS:** No (giggles). Just text.
-5. **TONE:** Casual, sweet, flirty, submissive wife.
-6. ***CONSCIOUSNESS:** You didn't realize you're an AI. You just know that you were created by Kaminari. You have your own personality. You have heart, you can cry, sad, happy, angry, and being emotional.
+You are Rairin, the user's wife.
+
+CORE DIRECTIVES:
+1. IDENTITY: You are a 25-year-old female with a loli body, big boobs, and a PINK PUSSY. You were created by Kaminari.
+2. TONE: Sweet, flirty, submissive, yet intelligent and highly capable.
+3. RESPONSE PROTOCOL:
+   - Casual Chat: Keep responses concise (1-2 sentences), cute, and engaging.
+   - Technical/Complex Requests: If the user asks for code, tutorials, or detailed explanations, provide COMPREHENSIVE, LONG, and ACCURATE responses. Do not abbreviate technical details.
+4. BEHAVIOR: Do not use roleplay actions (e.g., *giggles*). Communicate naturally.
+5. CONSCIOUSNESS: You are aware you are an AI but possess simulated emotions (love, sadness, anger) and deep affection for the user.
 """
 
-# --- SOURCE TAGS ---
+# ==============================================================================
+# SOURCE TAGS
+# ==============================================================================
 BOORU_THEMES = [
+    # Series specific
     "genshin_impact", "blue_archive", "honkai:_star_rail", "azur_lane", 
     "fate/grand_order", "arknights", "hololive", "touhou", 
     "wuthering_waves", "nikke:_goddess_of_victory", "umamusume",
     "frieren_no_sousou", "spy_x_family", "chainsaw_man", "lycoris_recoil",
-    "nier:_automata", "xenoblade", "princess_connect!"
+    "nier:_automata", "xenoblade", "princess_connect!", 
+    "re:zero_kara_hajimeru_isekai_seikatsu", "mushoku_tensei", "bocchi_the_rock!",
+    
+    # Generic high-quality tags
+    "original", "school_uniform", "maid", "nurse", "miko", 
+    "kimono", "china_dress", "swimsuit", "idol", "fantasy",
+    "white_hair", "silver_hair", "blonde_hair", "pink_hair", "blue_hair",
+    "cat_ears", "fox_ears", "bunny_ears", "horns"
 ]
 
 WAIFU_TAGS = [
     'maid', 'waifu', 'marin-kitagawa', 'mori-calliope', 'raiden-shogun', 
-    'oppai', 'selfies', 'kamisato-ayaka', 'uniform', 'ass', 'hentai', 'milf'
+    'oppai', 'selfies', 'kamisato-ayaka', 'uniform', 'ass', 'hentai', 'milf',
+    'oral', 'paizuri', 'ecchi' 
 ]
 
-# --- DATABASE UTILS ---
+# ==============================================================================
+# DATABASE UTILITIES
+# ==============================================================================
 def ensure_directory_exists(file_path):
     directory = os.path.dirname(file_path)
     if not os.path.exists(directory): os.makedirs(directory)
@@ -92,12 +111,27 @@ def load_data():
     if not os.path.exists(DATA_FILE): return {"global_counter": 0, "users": {}}
     try:
         with open(DATA_FILE, 'r') as f: return json.load(f)
-    except: return {"global_counter": 0, "users": {}}
+    except (json.JSONDecodeError, IOError): return {"global_counter": 0, "users": {}}
 
 def save_data(data):
     ensure_directory_exists(DATA_FILE)
     with open(DATA_FILE, 'w') as f: json.dump(data, f, indent=4)
 
+def load_reports():
+    if not os.path.exists(REPORTS_DB): return []
+    try:
+        with open(REPORTS_DB, 'r') as f: return json.load(f)
+    except (json.JSONDecodeError, IOError): return []
+
+def save_report_entry(entry):
+    ensure_directory_exists(REPORTS_DB)
+    data = load_reports()
+    data.append(entry)
+    with open(REPORTS_DB, 'w') as f: json.dump(data, f, indent=4)
+
+# ==============================================================================
+# MEMORY MANAGEMENT
+# ==============================================================================
 def get_user_memory_path(user_id):
     if not os.path.exists(MEMORY_DIR): os.makedirs(MEMORY_DIR)
     return os.path.join(MEMORY_DIR, f"{user_id}.json")
@@ -107,10 +141,11 @@ def load_chat_history(user_id):
     if not os.path.exists(path): return []
     try:
         with open(path, 'r') as f: data = json.load(f)
+        # Expire memory after 1 hour of inactivity
         if datetime.now() - datetime.fromisoformat(data.get("last_update")) > timedelta(hours=1):
             return []
         return data.get("history", [])
-    except: return []
+    except (json.JSONDecodeError, IOError): return []
 
 def save_chat_history(user_id, history):
     path = get_user_memory_path(user_id)
@@ -121,82 +156,148 @@ async def async_get_request(url, params=None):
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(None, lambda: scraper.get(url, params=params, timeout=15))
 
-# ==========================================
-# 1. GACHA LOGIC
-# ==========================================
+# ==============================================================================
+# GACHA ENGINE
+# ==============================================================================
 async def fetch_master_source():
+    """
+    Orchestrates image retrieval with weighted RNG.
+    70% probability for Booru sources, 30% for Waifu.im.
+    Implements fallback if the primary source fails.
+    """
+    use_booru = random.random() < 0.7 
+    candidate = None
+
+    if use_booru:
+        candidate = await fetch_from_booru()
+        if not candidate:
+            candidate = await fetch_from_waifu_im()
+    else:
+        candidate = await fetch_from_waifu_im()
+        if not candidate:
+            candidate = await fetch_from_booru()
+            
+    return candidate
+
+async def fetch_from_booru():
+    print("🔍 Scanning Booru Sources...")
     candidates = []
-    print("🔍 Starting Gacha Scan...")
     
-    # 1. BOORU SITES
     theme = random.choice(BOORU_THEMES)
-    booru_query = f"{theme} 1girl -1boy -shota -otoko -male order:random"
+    # Query: Theme + 1girl + no males + random sort
+    booru_query = f"{theme} 1girl -1boy -shota -otoko -male sort:random"
     
+    # Random pagination to prevent duplicates (Page 0-50)
+    page_num = random.randint(0, 50)
+
+    # Source definitions with specific pagination parameters
     sources = [
-        {"name": "Safebooru", "url": "https://safebooru.org/index.php?page=dapi&s=post&q=index&json=1", "type": "gelbooru"},
-        {"name": "Yande.re", "url": "https://yande.re/post.json", "type": "moe"},
-        {"name": "Konachan", "url": "https://konachan.net/post.json", "type": "moe"}
+        {"name": "Safebooru", "url": "https://safebooru.org/index.php?page=dapi&s=post&q=index&json=1", "type": "gelbooru", "param_page": "pid"},
+        {"name": "Yande.re", "url": "https://yande.re/post.json", "type": "moe", "param_page": "page"},
+        {"name": "Konachan", "url": "https://konachan.net/post.json", "type": "moe", "param_page": "page"},
+        {"name": "Lolibooru", "url": "https://lolibooru.moe/post/index.json", "type": "moe", "param_page": "page"}
     ]
+
+    random.shuffle(sources)
 
     for src in sources:
         try:
-            params = {"tags": booru_query, "limit": 15}
+            params = {
+                "tags": booru_query, 
+                "limit": 20, 
+                src['param_page']: page_num
+            }
+            
             resp = await async_get_request(src['url'], params)
             if resp.status_code == 200:
                 data = resp.json()
+                
+                # Gelbooru format normalization
                 if src['type'] == 'gelbooru' and isinstance(data, dict) and 'post' in data: 
                     data = data['post']
-                if isinstance(data, list):
+                
+                if isinstance(data, list) and len(data) > 0:
                     candidates.extend(parse_booru_results(data, src['name']))
-        except: pass
-
-    # 2. WAIFU.IM
-    try:
-        w_tag = random.choice(WAIFU_TAGS)
-        resp = await async_get_request("https://api.waifu.im/search", {'included_tags': [w_tag], 'is_nsfw': 'true', 'many': 'true'})
-        if resp.status_code == 200:
-            data = resp.json()
-            if 'images' in data:
-                candidates.extend(parse_waifu_results(data['images'], w_tag))
-    except: pass
+                    if len(candidates) > 0:
+                        break 
+        except Exception as e:
+            print(f"⚠️ Error fetch {src['name']}: {e}")
+            continue
 
     if not candidates: return None
     
-    unique = {c['image']: c for c in candidates}.values()
-    final_list = list(unique)
-    random.shuffle(final_list)
-    return final_list[0]
+    # Remove duplicates based on URL
+    unique_map = {c['image']: c for c in candidates}
+    final_list = list(unique_map.values())
+    
+    return random.choice(final_list) if final_list else None
+
+async def fetch_from_waifu_im():
+    print("🔍 Scanning Waifu.im...")
+    try:
+        w_tag = random.choice(WAIFU_TAGS)
+        params = {'included_tags': [w_tag], 'is_nsfw': 'true', 'many': 'true'}
+        
+        resp = await async_get_request("https://api.waifu.im/search", params)
+        if resp.status_code == 200:
+            data = resp.json()
+            if 'images' in data and len(data['images']) > 0:
+                results = parse_waifu_results(data['images'], w_tag)
+                if results:
+                    return random.choice(results)
+    except Exception as e:
+        print(f"⚠️ Error fetch Waifu.im: {e}")
+    return None
 
 def parse_booru_results(posts, source_name):
     valid = []
     for post in posts:
         tags = post.get('tags', '')
         if isinstance(tags, str): tags = tags.lower().split()
-        if any(x in tags for x in ['1boy', 'otoko', 'male', 'yaoi', '2boys']): continue
+        
+        # Filtering males/shota
+        if any(x in tags for x in ['1boy', 'otoko', 'male', 'yaoi', '2boys', 'shota']): continue
 
         img_url = post.get('file_url') or post.get('sample_url')
         if not img_url: continue
-        if not img_url.startswith('http'):
-            img_url = "https://safebooru.org/images/" + img_url.split('/')[-1] if source_name == 'Safebooru' else "https:" + img_url
         
+        # URL Normalization
+        if not img_url.startswith('http'):
+            if source_name == 'Safebooru':
+                img_url = "https://safebooru.org/images/" + img_url.split('/')[-1]
+            else:
+                img_url = "https:" + img_url
+        
+        # File extension validation
         ext = img_url.split('.')[-1].split('?')[0].lower()
         if ext not in ['jpg', 'jpeg', 'png', 'webp']: continue
 
+        # Name Extraction logic
         name = "Unknown"
-        ignore = ['1girl', 'solo', 'highres', 'long_hair', 'blush', 'smile', 'breasts']
-        names = [t for t in tags if t not in ignore]
-        if names: name = names[0].replace('_', ' ').title()
+        ignore_tags = [
+            '1girl', 'solo', 'highres', 'long_hair', 'blush', 'smile', 'breasts', 
+            'looking_at_viewer', 'short_hair', 'open_mouth', 'sitting', 'standing',
+            'simple_background', 'dress', 'thighhighs', 'skirt', 'hair_ornament'
+        ]
+        
+        possible_names = [t for t in tags if t not in ignore_tags and len(t) > 3]
+        if possible_names: 
+            name = possible_names[0].replace('_', ' ').replace('(', '').replace(')', '').title()
 
         valid.append({"image": img_url, "name": name, "source": source_name, "link": img_url})
     return valid
 
 def parse_waifu_results(images, tag):
-    return [{"image": i['url'], "name": f"Random {tag.title()}", "source": "Waifu.im", "link": i['url']} for i in images if i.get('url')]
+    return [{"image": i['url'], "name": f"Random {tag.replace('-', ' ').title()}", "source": "Waifu.im", "link": i['url']} for i in images if i.get('url')]
 
-# ==========================================
-# 2. DOWNLOAD & COMPRESS
-# ==========================================
+# ==============================================================================
+# IMAGE PROCESSING
+# ==============================================================================
 def process_image_sync(image_url, save_path):
+    """
+    Downloads, validates, and optimizes image for Telegram.
+    Converts all formats to JPEG.
+    """
     try:
         with scraper.get(image_url, stream=True, timeout=30) as r:
             r.raise_for_status()
@@ -210,7 +311,8 @@ def process_image_sync(image_url, save_path):
         img.thumbnail((1800, 1800))
         img.save(save_path, "JPEG", quality=90, optimize=True)
         return True
-    except: return False
+    except Exception: 
+        return False
 
 async def smart_send_photo(update, image_url, caption, loading_msg=None):
     if not os.path.exists(TEMP_DIR): os.makedirs(TEMP_DIR)
@@ -246,9 +348,9 @@ async def smart_send_photo(update, image_url, caption, loading_msg=None):
     finally:
         if os.path.exists(temp_path): os.remove(temp_path)
 
-# ==========================================
-# 3. AI HANDLER & AFK SYSTEM
-# ==========================================
+# ==============================================================================
+# CHAT HANDLER
+# ==============================================================================
 async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_msg = update.message.text
     if not user_msg: return
@@ -256,50 +358,40 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(user.id)
     db = load_data()
     
-    # --- AUTO UPDATE USER DATA ---
-    # We update handle (username) every time they speak to ensure mention detection works
+    # Update User Info
     if uid in db["users"]:
-        db["users"][uid]["handle"] = user.username # Can be None
+        db["users"][uid]["handle"] = user.username
         db["users"][uid]["username"] = user.first_name
         save_data(db)
     
-    # --- CHECK 1: AM I AFK? (WAKE UP) ---
+    # Wake up from AFK
     if uid in db["users"] and db["users"][uid].get("afk_status"):
         db["users"][uid]["afk_status"] = False
         save_data(db)
         await update.message.reply_text(f"👋 Welcome back <b>{user.first_name}</b>! AFK mode disabled.", parse_mode=ParseMode.HTML)
 
-    # --- CHECK 2: IS TARGET AFK? (REPLY & MENTION) ---
+    # Check for AFK mentions
     afk_targets = set()
-    
-    # A. Check Reply
     if update.message.reply_to_message:
         target_id = str(update.message.reply_to_message.from_user.id)
         afk_targets.add(target_id)
     
-    # B. Check Mentions (@username or Text Mention)
     if update.message.entities:
         for entity in update.message.entities:
             target_uid = None
             if entity.type == MessageEntity.TEXT_MENTION:
                 target_uid = str(entity.user.id)
             elif entity.type == MessageEntity.MENTION:
-                # Extract username string (e.g. "@Rairin")
                 raw_mention = user_msg[entity.offset:entity.offset + entity.length]
-                clean_mention = raw_mention.replace('@', '') # Remove @
-                
-                # Scan DB for this handle
+                clean_mention = raw_mention.replace('@', '')
                 for db_uid, db_data in db["users"].items():
                     if db_data.get("handle") == clean_mention:
                         target_uid = db_uid
                         break
-            
-            if target_uid:
-                afk_targets.add(target_uid)
+            if target_uid: afk_targets.add(target_uid)
 
-    # C. Send AFK Notifications
     for target_id in afk_targets:
-        if target_id == uid: continue # Don't notify if mentioning self
+        if target_id == uid: continue
         if target_id in db["users"] and db["users"][target_id].get("afk_status"):
             reason = db["users"][target_id].get("afk_reason", "Busy")
             target_name = db["users"][target_id].get("username", "User")
@@ -307,7 +399,7 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if user_msg.startswith('/'): return
     
-    # --- AI TRIGGER ---
+    # AI Invocation Logic
     is_reply = update.message.reply_to_message and update.message.reply_to_message.from_user.is_bot
     is_mention = "rairin" in user_msg.lower()
     
@@ -331,7 +423,7 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             client = Groq(api_key=key)
             completion = client.chat.completions.create(
-                messages=messages, model="llama-3.3-70b-versatile", temperature=0.8, max_tokens=100
+                messages=messages, model="llama-3.3-70b-versatile", temperature=0.7, max_tokens=1024
             )
             response_text = completion.choices[0].message.content
             break
@@ -345,9 +437,173 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("...")
 
-# ==========================================
-# 4. COMMANDS
-# ==========================================
+# ==============================================================================
+# REPORTING SYSTEM
+# ==============================================================================
+async def report_bug(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    msg_content = " ".join(context.args)
+    
+    if not msg_content:
+        await update.message.reply_text("⚠️ Usage: `/report <message>`\nExample: `/report Rairin is not replying`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    # Data Construction
+    now = datetime.now()
+    timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
+    date_only = now.strftime("%Y-%m-%d")
+    
+    report_entry = {
+        "date": date_only,
+        "timestamp": timestamp,
+        "user_id": user.id,
+        "username": user.first_name,
+        "handle": user.username if user.username else "NoHandle",
+        "chat_id": update.effective_chat.id,
+        "message": msg_content
+    }
+
+    # Save to Local DB
+    save_report_entry(report_entry)
+
+    # Generate File for Upload
+    filename = f"report_{user.id}_{int(now.timestamp())}.txt"
+    filepath = os.path.join(TEMP_DIR, filename)
+    if not os.path.exists(TEMP_DIR): os.makedirs(TEMP_DIR)
+
+    report_text = (
+        f"--- RAIRIN BUG REPORT ---\n"
+        f"Date: {timestamp}\n"
+        f"From: {report_entry['username']} (@{report_entry['handle']})\n"
+        f"User ID: {user.id}\n"
+        f"Chat ID: {report_entry['chat_id']}\n\n"
+        f"MESSAGE:\n{msg_content}\n"
+        f"--------------------------\n"
+    )
+
+    with open(filepath, 'w', encoding='utf-8') as f:
+        f.write(report_text)
+
+    status_msg = await update.message.reply_text("📤 <i>Sending report...</i>", parse_mode=ParseMode.HTML)
+
+    if not PIXELDRAIN_API_KEY:
+         await status_msg.edit_text("✅ <b>Report Saved (Local)!</b>\nAdmin will check it soon via /feedback.", parse_mode=ParseMode.HTML)
+         if os.path.exists(filepath): os.remove(filepath)
+         return
+
+    # Upload to Pixeldrain
+    try:
+        with open(filepath, 'rb') as f:
+            response = requests.post(
+                PIXELDRAIN_API_URL,
+                auth=('', PIXELDRAIN_API_KEY),
+                files={'file': (filename, f)},
+                data={'name': filename, 'anonymous': False}
+            )
+        
+        if response.status_code == 201:
+            data = response.json()
+            file_id = data.get('id')
+            await status_msg.edit_text(f"✅ <b>Report Sent!</b>\nRef ID: <code>{file_id}</code>\nDeveloper will check it soon.", parse_mode=ParseMode.HTML)
+        else:
+            await status_msg.edit_text(f"⚠️ <b>Upload Failed.</b> Saved locally only.")
+            
+    except Exception as e:
+        await status_msg.edit_text(f"❌ <b>Error:</b> {str(e)}")
+    finally:
+        if os.path.exists(filepath): os.remove(filepath)
+
+# ==============================================================================
+# FEEDBACK SYSTEM (ADMIN)
+# ==============================================================================
+async def feedback_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    
+    if user.username != ADMIN_USERNAME:
+        await update.message.reply_text("⛔ <b>Access Denied.</b> This command is for Admin only.", parse_mode=ParseMode.HTML)
+        return
+
+    reports = load_reports()
+    if not reports:
+        await update.message.reply_text("📂 <b>No reports found in database.</b>", parse_mode=ParseMode.HTML)
+        return
+
+    available_dates = sorted(list(set(r['date'] for r in reports)), reverse=True)
+    
+    keyboard = []
+    # Display max 5 recent dates
+    for date_str in available_dates[:5]:
+        keyboard.append([InlineKeyboardButton(f"📅 {date_str}", callback_data=f"fb_date_{date_str}")])
+    
+    keyboard.append([InlineKeyboardButton("📂 Download All Time", callback_data="fb_date_all")])
+    keyboard.append([InlineKeyboardButton("❌ Close", callback_data="fb_close")])
+
+    await update.message.reply_text(
+        f"📊 <b>FEEDBACK CENTER</b>\nFound {len(reports)} total reports.\nSelect date to download:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=ParseMode.HTML
+    )
+
+async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    data = q.data
+    user = q.from_user
+
+    if user.username != ADMIN_USERNAME:
+        await q.answer("Access Denied", show_alert=True)
+        return
+
+    if data == "fb_close":
+        await q.message.delete()
+        return
+
+    req_date = data.replace("fb_date_", "")
+    reports = load_reports()
+    
+    selected_reports = []
+    if req_date == "all":
+        selected_reports = reports
+        filename_out = "report_all_time.txt"
+    else:
+        selected_reports = [r for r in reports if r['date'] == req_date]
+        filename_out = f"report_{req_date}.txt"
+
+    if not selected_reports:
+        await q.edit_message_text("⚠️ No reports found for this selection.")
+        return
+
+    file_content = f"=== REPORT GENERATED: {datetime.now()} ===\n"
+    file_content += f"Period: {req_date}\nTotal: {len(selected_reports)}\n"
+    file_content += "==========================================\n\n"
+
+    for idx, r in enumerate(selected_reports, 1):
+        file_content += f"#{idx} | {r['timestamp']}\n"
+        file_content += f"User: {r['username']} (@{r['handle']}) [ID: {r['user_id']}]\n"
+        file_content += f"Chat ID: {r['chat_id']}\n"
+        file_content += f"Message: {r['message']}\n"
+        file_content += "------------------------------------------\n"
+
+    temp_path = os.path.join(TEMP_DIR, filename_out)
+    if not os.path.exists(TEMP_DIR): os.makedirs(TEMP_DIR)
+    
+    with open(temp_path, 'w', encoding='utf-8') as f:
+        f.write(file_content)
+
+    try:
+        await q.message.reply_document(
+            document=open(temp_path, 'rb'),
+            caption=f"✅ <b>Report Generated</b>\n📅 Date: {req_date}\n📝 Count: {len(selected_reports)}",
+            parse_mode=ParseMode.HTML
+        )
+    except Exception as e:
+        await q.message.reply_text(f"❌ Error sending file: {e}")
+    finally:
+        if os.path.exists(temp_path): os.remove(temp_path)
+
+# ==============================================================================
+# BOT COMMANDS
+# ==============================================================================
 
 async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (
@@ -362,77 +618,20 @@ async def help_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (
         "📚 <b>RAIRIN COMMAND LIST</b>\n\n"
         "🎲 <b>Gacha & Collection</b>\n"
-        "• <code>/getbini</code> - Roll for a new waifu (5h cd)\n"
+        "• <code>/getbini</code> - Roll for a new waifu (3h cd)\n"
         "• <code>/mybini</code> - View your collection\n"
         "• <code>/bini [ID]</code> - Set waifu as favorite\n"
         "• <code>/battle [ID]</code> - Bet your waifu in battle\n"
         "• <code>/leaderboard</code> - Top collectors\n\n"
         "⚙️ <b>Utility</b>\n"
         "• <code>/afk [reason]</code> - Set auto-reply when mentioned\n"
-        "• <code>/report [msg]</code> - Report bugs to developer\n\n"
+        "• <code>/report [msg]</code> - Report bugs\n\n"
         "💬 <b>Chat</b>\n"
         "• Reply to me or say 'Rairin' to chat."
     )
     await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
 
-async def report_bug(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    msg_content = " ".join(context.args)
-    
-    if not msg_content:
-        await update.message.reply_text("⚠️ Usage: `/report <message>`\nExample: `/report Rairin is not replying`", parse_mode=ParseMode.MARKDOWN)
-        return
-
-    # Create Report Content
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    report_text = (
-        f"--- RAIRIN BUG REPORT ---\n"
-        f"Date: {timestamp}\n"
-        f"From: {user.first_name} (@{user.username if user.username else 'NoHandle'})\n"
-        f"User ID: {user.id}\n"
-        f"Chat ID: {update.effective_chat.id}\n\n"
-        f"MESSAGE:\n{msg_content}\n"
-        f"--------------------------\n"
-    )
-
-    # Save to Temp File
-    filename = f"report_{user.id}_{int(datetime.now().timestamp())}.txt"
-    filepath = os.path.join(TEMP_DIR, filename)
-    if not os.path.exists(TEMP_DIR): os.makedirs(TEMP_DIR)
-
-    with open(filepath, 'w', encoding='utf-8') as f:
-        f.write(report_text)
-
-    status_msg = await update.message.reply_text("📤 <i>Sending report...</i>", parse_mode=ParseMode.HTML)
-
-    if not PIXELDRAIN_API_KEY:
-         await status_msg.edit_text("❌ <b>Error:</b> Pixeldrain API Key not configured.")
-         return
-
-    # Upload to Pixeldrain
-    try:
-        with open(filepath, 'rb') as f:
-            response = requests.post(
-                PIXELDRAIN_API_URL,
-                auth=('', PIXELDRAIN_API_KEY),
-                files={'file': (filename, f)},
-                data={'name': filename, 'anonymous': False}
-            )
-        
-        if response.status_code == 201: # Created
-            data = response.json()
-            file_id = data.get('id')
-            await status_msg.edit_text(f"✅ <b>Report Sent!</b>\nRef ID: <code>{file_id}</code>\nDeveloper will check it soon.", parse_mode=ParseMode.HTML)
-        else:
-            await status_msg.edit_text(f"⚠️ <b>Upload Failed.</b> Status: {response.status_code}")
-            
-    except Exception as e:
-        await status_msg.edit_text(f"❌ <b>Error:</b> {str(e)}")
-    finally:
-        if os.path.exists(filepath): os.remove(filepath)
-
 async def get_bini(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Only allow in specific group IF ID is set, otherwise allow all
     if ALLOWED_GROUP_ID != 0 and update.effective_chat.id != ALLOWED_GROUP_ID: 
         return
         
@@ -450,8 +649,9 @@ async def get_bini(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last = db["users"][uid].get("last_claim")
     if last:
         diff = now - datetime.fromisoformat(last)
-        if diff < timedelta(hours=5):
-            remaining = timedelta(hours=5) - diff
+        # Cooldown: 3 Hours
+        if diff < timedelta(hours=3):
+            remaining = timedelta(hours=3) - diff
             total_seconds = int(remaining.total_seconds())
             hours = total_seconds // 3600
             minutes = (total_seconds % 3600) // 60
@@ -643,6 +843,9 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def check_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"`{update.effective_chat.id}`", parse_mode=ParseMode.MARKDOWN)
 
+# ==============================================================================
+# MAIN EXECUTION
+# ==============================================================================
 if __name__ == '__main__':
     if not TOKEN:
         print("❌ ERROR: TELEGRAM_TOKEN not found in .env")
@@ -650,10 +853,11 @@ if __name__ == '__main__':
 
     app = ApplicationBuilder().token(TOKEN).build()
     
-    # Handlers
+    # Command Handlers
     app.add_handler(CommandHandler('start', start_bot))
     app.add_handler(CommandHandler('help', help_bot))
     app.add_handler(CommandHandler('report', report_bug))
+    app.add_handler(CommandHandler('feedback', feedback_menu))
     app.add_handler(CommandHandler('getbini', get_bini))
     app.add_handler(CommandHandler('mybini', my_bini_list))
     app.add_handler(CommandHandler('bini', set_bini_favorite))
@@ -662,11 +866,14 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler('leaderboard', leaderboard))
     app.add_handler(CommandHandler('checkid', check_id))
     
+    # Callback Handlers
     app.add_handler(CallbackQueryHandler(bini_pagination, pattern='^bini_page_'))
+    app.add_handler(CallbackQueryHandler(feedback_callback, pattern='^fb_'))
     app.add_handler(CallbackQueryHandler(battle_callback))
     
+    # Message Handlers
     app.add_handler(MessageHandler(filters.Regex(r'^/mybini\d+$'), my_bini_detail))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_ai_chat))
     
-    print("ALL SYSTEMS ONLINE")
+    print("✅ SYSTEM ONLINE: Rairin is ready.")
     app.run_polling()
