@@ -1018,5 +1018,5 @@ if __name__ == '__main__':
     app.add_handler(MessageHandler(filters.Regex(r'^/mybini\d+$'), my_bini_detail))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_ai_chat))
     
-    print("ALL SYSTEMS ONLINE")
+    print("ALL SYSTEMS ONLINE NOW")
     app.run_polling()
