@@ -928,4 +928,7 @@ if __name__ == '__main__':
     
     app.add_handler(MessageHandler(filters.Regex(r'^/mybini\d+$'), my_bini_detail))
     app.add_handler(MessageHandler(filters.User(username="kaminarich") & filters.Regex(r'(?i)^(shutdown|terminate|suspend|activate|reactivate|turn on)'), admin_system_control))
-    app.add_handler(
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_ai_chat))
+    
+    print("ALL SYSTEMS ONLINE now")
+    app.run_polling()
