@@ -50,8 +50,8 @@ else:
     HF_TOKENS = []
     print("⚠️ WARNING: No Hugging Face Tokens found in .env")
 
-# Model: Animagine XL 3.1 (Terbaik untuk Anime/Waifu Style)
-HF_API_URL = "https://api-inference.huggingface.co/models/cagliostroai/animagine-xl-3.1"
+# Model: Stable Diffusion XL Base 1.0 (Official & Stabil - Menggantikan yang error)
+HF_API_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
 
 # FILES
 DATA_FILE = 'database/database_bini.json'
@@ -289,10 +289,10 @@ async def generate_image_hf(prompt):
         "inputs": final_prompt,
         "parameters": {
             "negative_prompt": "nsfw, lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry, 3d, realistic",
-            "width": 832, 
-            "height": 1216, 
+            "width": 1024, # Stable Diffusion XL bisa 1024x1024
+            "height": 1024, 
             "guidance_scale": 7.5, 
-            "num_inference_steps": 28
+            "num_inference_steps": 30
         }
     }
 
@@ -308,9 +308,9 @@ async def generate_image_hf(prompt):
         return BytesIO(image_bytes)
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 503:
-             raise Exception("💤 Model sedang loading di server. Coba 1 menit lagi ya!")
+             raise Exception("💤 Model sedang loading di server (Cold Boot). Coba 1 menit lagi ya!")
         elif e.response.status_code == 429:
-             raise Exception("⏳ Rate limit. Tunggu sebentar...")
+             raise Exception("⏳ Rate limit (Antrian Penuh). Tunggu sebentar...")
         else:
              raise e
     except Exception as e:
@@ -474,7 +474,7 @@ async def draw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🎨 **Usage:** `/imagine <description>`\nExample: `/imagine 1girl, silver hair, cat ears`", parse_mode=ParseMode.MARKDOWN)
         return
 
-    loading_msg = await update.message.reply_text("🎨 *Rairin sedang melukis...*", parse_mode=ParseMode.MARKDOWN)
+    loading_msg = await update.message.reply_text("🎨 *Rairin sedang melukis...* (StabilityAI)", parse_mode=ParseMode.MARKDOWN)
 
     try:
         img_io = await generate_image_hf(user_prompt)
