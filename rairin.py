@@ -57,7 +57,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 scraper = cloudscraper.create_scraper(
     browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
 )
-# --- AI PERSONA (FIXED: OBEDIENT WIFE FOR EVERYONE) ---
+# --- AI PERSONA (OBEDIENT WIFE FOR EVERYONE, HOPEFULLY) ---
 SYSTEM_INSTRUCTION = """
 You are Rairin.
 1. **RELATIONSHIP DYNAMICS:**
@@ -292,30 +292,30 @@ async def admin_system_control(update: Update, context: ContextTypes.DEFAULT_TYP
     user = update.effective_user
     msg = update.message.text.lower().strip()
 
-    # HANYA RESPONS KE KAMINARICH
+    # ONLY RESPONS TO OWNER
     if user.username != "kaminarich":
         return
 
-    # LOGIKA SHUTDOWN
+    # LOGIC SHUTDOWN
     shutdown_keywords = ["shutdown", "shutdown system", "terminate", "suspend"]
     if msg in shutdown_keywords:
         if not BOT_SLEEP_MODE:
             BOT_SLEEP_MODE = True
-            await update.message.reply_text("🔌 <b>System Shutting Down...</b>\nEntering Sleep Mode. Goodnight, Master.", parse_mode=ParseMode.HTML)
+            await update.message.reply_text("<b>System Shutting Down...</b>\nEntering Sleep Mode. Goodnight, Master.", parse_mode=ParseMode.HTML)
         return
 
-    # LOGIKA WAKE UP
+    # LOGIC to WAKE UP
     wakeup_keywords = ["activate system", "reactivate", "turn on service", "wake up"]
     if any(x in msg for x in wakeup_keywords):
         if BOT_SLEEP_MODE:
             BOT_SLEEP_MODE = False
-            await update.message.reply_text("🔋 <b>System Reactivated.</b>\nRairin services are back online. Awaiting orders, Master.", parse_mode=ParseMode.HTML)
+            await update.message.reply_text("<b>System Reactivated.</b>\nRairin services are back online. Awaiting orders, Master.", parse_mode=ParseMode.HTML)
         return
 # ========== Chat Handle ============
 async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # --- TAMBAHAN LOGIKA SLEEP ---
+    # --- ADDITIONAL ---
     if BOT_SLEEP_MODE:
-        return # Bot mati total, tidak merespon apapun
+        return
     user_msg = update.message.text
     if not user_msg: return
     user = update.effective_user
