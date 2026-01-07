@@ -131,38 +131,50 @@ async def async_get_request(url, params=None):
     return await loop.run_in_executor(None, lambda: scraper.get(url, params=params, timeout=10))
 
 # ==========================================
-# 1. GACHA & SEARCH LOGIC (SMART ID SEARCH)
+# 1. GACHA & SEARCH LOGIC (NEKOS API SMART)
 # ==========================================
 
+def escape_query(query):
+    """
+    Manual escaping untuk karakter spesial Nekos API.
+    Menggantikan fungsi EscapedQuery dari library.
+    """
+    # Karakter yang perlu di-escape agar tidak error di API
+    special_chars = r"\\()|&!~*?[]{}:\""
+    escaped = ""
+    for char in query:
+        if char in special_chars:
+            escaped += "\\" + char
+        else:
+            escaped += char
+    return escaped
+
 async def fetch_master_source(specific_tags=None):
-    """
-    Logika Nekos API V4:
-    1. /hunt <keyword>:
-       - Search endpoint '/characters' -> Ambil ID
-       - Search endpoint '/tags' (Categories) -> Ambil ID
-       - Ambil gambar berdasarkan ID tersebut (limit 50, random)
-    2. /getbini:
-       - Random murni.
-    """
     base_url = "https://api.nekosapi.com/v4"
     headers = {"User-Agent": "RairinBot/1.0"}
     
-    # --- JIKA USER CARI SPESIFIK (/HUNT) ---
+    # --- A. LOGIKA PENCARIAN SPESIFIK (/HUNT) ---
     if specific_tags:
-        query = specific_tags.strip()
-        print(f"🔍 Hunting ID for: {query}")
+        # 1. Bersihkan & Escape Query
+        raw_query = specific_tags.strip()
+        safe_query = escape_query(raw_query)
+        
+        # Tambahkan wildcard (*) agar pencarian jadi Fuzzy (mirip SQL LIKE %query%)
+        # Contoh: "Miku" -> "*Miku*" (Biar ketemu Hatsune Miku)
+        search_term = f"*{safe_query}*"
+        
+        print(f"🔍 Hunting ID for: {search_term}")
         
         loop = asyncio.get_running_loop()
 
         # Fungsi Helper cari ID
-        def find_id(endpoint, search_query):
+        def find_id(endpoint, term):
             try:
-                # Cari berdasarkan nama
-                params = {"search": search_query, "limit": 1}
-                r = requests.get(f"{base_url}/{endpoint}", params=params, headers=headers, timeout=5)
+                # Cari berdasarkan search query
+                params = {"search": term, "limit": 1}
+                r = requests.get(f"{base_url}/{endpoint}", params=params, headers=headers, timeout=10)
                 if r.status_code == 200:
                     data = r.json()
-                    # API V4 biasanya return 'items' atau langsung list
                     items = data.get("items", []) if isinstance(data, dict) else data
                     
                     if items and len(items) > 0:
@@ -172,33 +184,34 @@ async def fetch_master_source(specific_tags=None):
                 print(f"Error searching {endpoint}: {e}")
             return None
 
-        # 1. Cari di Characters & Tags (Categories) secara paralel
-        task_char = loop.run_in_executor(None, lambda: find_id("characters", query))
-        task_tag = loop.run_in_executor(None, lambda: find_id("tags", query))
+        # 2. Cari di Characters, Tags, Artists secara Paralel
+        task_char = loop.run_in_executor(None, lambda: find_id("characters", search_term))
+        task_tag = loop.run_in_executor(None, lambda: find_id("tags", search_term))
+        task_artist = loop.run_in_executor(None, lambda: find_id("artists", search_term))
         
-        # Jalankan barengan biar cepet
-        results = await asyncio.gather(task_char, task_tag)
-        found_char, found_tag = results[0], results[1]
-
-        # Prioritas: Character > Tag
-        match = found_char if found_char else found_tag
+        results = await asyncio.gather(task_char, task_tag, task_artist)
+        
+        # Prioritas: Character > Tag > Artist
+        # Jika Character ketemu, pakai Character. Jika tidak, cek Tag, dst.
+        match = results[0] or results[1] or results[2]
 
         if match:
             print(f"✅ Match Found: {match['name']} ({match['type']}) ID: {match['id']}")
             
-            # Siapkan filter untuk endpoint images
+            # 3. Fetch Gambar berdasarkan ID yang ditemukan
             img_params = {
-                "limit": 50, # GREP 50 GAMBAR
-                "rating": ["safe", "suggestive", "borderline", "explicit"],
-                "sort": "random"
+                "limit": 50, # Ambil 50 gambar yang valid
+                "rating": ["safe", "suggestive", "borderline", "explicit"], # Semua rating
+                "sort": "random" # Biar server bantu ngacak
             }
 
             if match['type'] == 'characters':
                 img_params['character'] = [match['id']]
             elif match['type'] == 'tags':
                 img_params['tags'] = [match['id']]
+            elif match['type'] == 'artists':
+                img_params['artist'] = [match['id']]
 
-            # Fetch Gambar
             try:
                 r = await loop.run_in_executor(None, lambda: requests.get(f"{base_url}/images", params=img_params, headers=headers, timeout=10))
                 if r.status_code == 200:
@@ -206,7 +219,7 @@ async def fetch_master_source(specific_tags=None):
                     items = data.get("items", []) if isinstance(data, dict) else data
                     
                     if items:
-                        # ACAK DARI HASIL YANG SUDAH PASTI BENAR
+                        # 4. Pilih 1 acak dari hasil
                         selected = random.choice(items)
                         return parse_nekos_item(selected)
                     else:
@@ -217,7 +230,7 @@ async def fetch_master_source(specific_tags=None):
             print("❌ Tidak ditemukan Character/Tag dengan nama itu.")
             return None
 
-    # --- JIKA RANDOM (/GETBINI) ---
+    # --- B. LOGIKA RANDOM GACHA (/GETBINI) ---
     else:
         try:
             loop = asyncio.get_running_loop()
@@ -868,56 +881,4 @@ async def set_afk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     uid = str(user.id)
     db = load_data()
-    if uid not in db["users"]: db["users"][uid] = {"username": user.first_name, "handle": user.username, "collection": []}
-    db["users"][uid]["afk_status"] = True
-    db["users"][uid]["afk_reason"] = reason
-    db["users"][uid]["username"] = user.first_name
-    db["users"][uid]["handle"] = user.username 
-    save_data(db)
-    await update.message.reply_text(f"💤 <b>{user.first_name}</b> AFK: <i>{reason}</i>", parse_mode=ParseMode.HTML)
-
-async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    db = load_data()
-    ranked = sorted([(d['username'], len(d.get('collection', []))) for d in db['users'].values()], key=lambda x: x[1], reverse=True)[:10]
-    txt = "🏆 <b>TOP COLLECTORS</b>\n" + "\n".join([f"{i+1}. {n} ({c})" for i, (n, c) in enumerate(ranked)])
-    await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
-
-async def check_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"`{update.effective_chat.id}`", parse_mode=ParseMode.MARKDOWN)
-
-if __name__ == '__main__':
-    if not TOKEN:
-        print("❌ ERROR: TELEGRAM_TOKEN not found in .env")
-        exit()
-
-    app = ApplicationBuilder().token(TOKEN).build()
-    
-    app.add_handler(CommandHandler('start', start_bot))
-    app.add_handler(CommandHandler('help', help_bot))
-    app.add_handler(CommandHandler('checkid', check_id))
-    app.add_handler(CommandHandler('afk', set_afk))
-    app.add_handler(CommandHandler('leaderboard', leaderboard))
-    
-    app.add_handler(CommandHandler('getbini', get_bini))
-    app.add_handler(CommandHandler('mybini', my_bini_list))
-    app.add_handler(CommandHandler('bini', set_bini_favorite))
-    
-    app.add_handler(CommandHandler('hunt', hunt_images))
-    app.add_handler(CommandHandler('divorce', divorce_waifu))
-    app.add_handler(CommandHandler('swing', swing_waifu))
-    app.add_handler(CommandHandler('battle', battle))
-    app.add_handler(CommandHandler('report', report_bug))
-    app.add_handler(CommandHandler('feedback', feedback_list))
-    
-    app.add_handler(CallbackQueryHandler(bini_pagination, pattern='^bini_page_'))
-    app.add_handler(CallbackQueryHandler(battle_callback, pattern='^(accept_battle|sel_)'))
-    app.add_handler(CallbackQueryHandler(divorce_callback, pattern='^div_'))
-    app.add_handler(CallbackQueryHandler(swing_callback, pattern='^swing_'))
-    app.add_handler(CallbackQueryHandler(feedback_callback, pattern='^fb_'))
-    
-    app.add_handler(MessageHandler(filters.Regex(r'^/mybini\d+$'), my_bini_detail))
-    app.add_handler(MessageHandler(filters.User(username="kaminarich") & filters.Regex(r'(?i)^(shutdown|terminate|suspend|activate|reactivate|turn on)'), admin_system_control))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_ai_chat))
-    
-    print("ALL SYSTEMS ONLINE now")
-    app.run_polling()
+    if uid not in
