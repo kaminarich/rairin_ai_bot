@@ -131,32 +131,38 @@ async def async_get_request(url, params=None):
     return await loop.run_in_executor(None, lambda: scraper.get(url, params=params, timeout=10))
 
 # ==========================================
-# 1. GACHA & SEARCH LOGIC (NEKOS API SMART)
+# 1. GACHA & SEARCH LOGIC (SMART ID SEARCH)
 # ==========================================
 
 async def fetch_master_source(specific_tags=None):
     """
-    Logika:
-    1. Jika specific_tags (Hunt): Cari ID Character/Tag/Artist dulu -> Fetch Images by ID -> Randomize.
-    2. Jika Kosong (Getbini): Fetch Random Image langsung.
+    Logika Nekos API V4:
+    1. /hunt <keyword>:
+       - Search endpoint '/characters' -> Ambil ID
+       - Search endpoint '/tags' (Categories) -> Ambil ID
+       - Ambil gambar berdasarkan ID tersebut (limit 50, random)
+    2. /getbini:
+       - Random murni.
     """
     base_url = "https://api.nekosapi.com/v4"
     headers = {"User-Agent": "RairinBot/1.0"}
     
-    # --- A. LOGIKA PENCARIAN SPESIFIK (/HUNT) ---
+    # --- JIKA USER CARI SPESIFIK (/HUNT) ---
     if specific_tags:
         query = specific_tags.strip()
         print(f"🔍 Hunting ID for: {query}")
         
-        # Fungsi Helper cari ID di endpoint tertentu
+        loop = asyncio.get_running_loop()
+
+        # Fungsi Helper cari ID
         def find_id(endpoint, search_query):
             try:
-                # Cari berdasarkan nama, limit 1 yang paling cocok
+                # Cari berdasarkan nama
                 params = {"search": search_query, "limit": 1}
                 r = requests.get(f"{base_url}/{endpoint}", params=params, headers=headers, timeout=5)
                 if r.status_code == 200:
                     data = r.json()
-                    # API V4 mengembalikan list di dalam 'items' atau langsung list
+                    # API V4 biasanya return 'items' atau langsung list
                     items = data.get("items", []) if isinstance(data, dict) else data
                     
                     if items and len(items) > 0:
@@ -166,83 +172,71 @@ async def fetch_master_source(specific_tags=None):
                 print(f"Error searching {endpoint}: {e}")
             return None
 
-        loop = asyncio.get_running_loop()
-        
-        # Cari di 3 tempat sekaligus: Characters, Artists, Tags (Categories)
-        # Kita pakai asyncio.gather biar cepat
+        # 1. Cari di Characters & Tags (Categories) secara paralel
         task_char = loop.run_in_executor(None, lambda: find_id("characters", query))
-        task_tag = loop.run_in_executor(None, lambda: find_id("tags", query)) # Tags = Categories
-        task_artist = loop.run_in_executor(None, lambda: find_id("artists", query))
+        task_tag = loop.run_in_executor(None, lambda: find_id("tags", query))
         
-        results = await asyncio.gather(task_char, task_tag, task_artist)
-        
-        # Prioritas: Character > Tag > Artist
-        # Misal: "Violet Evergarden" (Char) lebih prioritas daripada tag
-        best_match = results[0] or results[1] or results[2]
+        # Jalankan barengan biar cepet
+        results = await asyncio.gather(task_char, task_tag)
+        found_char, found_tag = results[0], results[1]
 
-        if best_match:
-            match_id = best_match["id"]
-            match_type = best_match["type"]
-            match_name = best_match["name"]
-            print(f"✅ Found Match: {match_name} (ID: {match_id}, Type: {match_type})")
+        # Prioritas: Character > Tag
+        match = found_char if found_char else found_tag
 
-            # FETCH GAMBAR BERDASARKAN ID
-            # Parameter untuk fetch gambar
-            img_params = {
-                "limit": 50, # Ambil 50 gambar (Grep)
-                "rating": ["safe", "suggestive", "borderline", "explicit"], # Semua rating
-                "sort": "random" # Biar server bantu ngacak juga
-            }
+        if match:
+            print(f"✅ Match Found: {match['name']} ({match['type']}) ID: {match['id']}")
             
-            # Set filter berdasarkan tipe yang ketemu
-            if match_type == "characters":
-                img_params["character"] = [match_id]
-            elif match_type == "tags":
-                img_params["tags"] = [match_id]
-            elif match_type == "artists":
-                img_params["artist"] = [match_id]
+            # Siapkan filter untuk endpoint images
+            img_params = {
+                "limit": 50, # GREP 50 GAMBAR
+                "rating": ["safe", "suggestive", "borderline", "explicit"],
+                "sort": "random"
+            }
 
+            if match['type'] == 'characters':
+                img_params['character'] = [match['id']]
+            elif match['type'] == 'tags':
+                img_params['tags'] = [match['id']]
+
+            # Fetch Gambar
             try:
-                # Request gambar
                 r = await loop.run_in_executor(None, lambda: requests.get(f"{base_url}/images", params=img_params, headers=headers, timeout=10))
                 if r.status_code == 200:
-                    img_data = r.json()
-                    items = img_data.get("items", []) if isinstance(img_data, dict) else img_data
+                    data = r.json()
+                    items = data.get("items", []) if isinstance(data, dict) else data
                     
                     if items:
-                        # ACAK DARI HASIL YANG SESUAI
-                        selected_item = random.choice(items)
-                        return parse_nekos_item(selected_item)
+                        # ACAK DARI HASIL YANG SUDAH PASTI BENAR
+                        selected = random.choice(items)
+                        return parse_nekos_item(selected)
                     else:
-                        print("❌ ID found but no images available.")
+                        print("❌ ID ketemu, tapi gambar kosong.")
             except Exception as e:
-                print(f"Error fetching images by ID: {e}")
+                print(f"Error fetch image by ID: {e}")
         else:
-            print("❌ No matching ID found.")
-            return None # Kalau gak nemu ID, mending gagal daripada ngasih gambar random salah
+            print("❌ Tidak ditemukan Character/Tag dengan nama itu.")
+            return None
 
-    # --- B. LOGIKA RANDOM GACHA (/GETBINI) ---
+    # --- JIKA RANDOM (/GETBINI) ---
     else:
         try:
             loop = asyncio.get_running_loop()
             def do_random():
-                # Endpoint random murni
+                # Random murni
                 r = requests.get(f"{base_url}/images/random", params={"limit": 1, "rating": ["safe", "suggestive"]}, headers=headers, timeout=10)
                 return r.json()
             
             data = await loop.run_in_executor(None, do_random)
-            
             items = data.get("items", []) if isinstance(data, dict) else data
             if items:
                 return parse_nekos_item(items[0])
-        
         except Exception as e:
             print(f"Error random gacha: {e}")
     
     return None
 
 def parse_nekos_item(item):
-    """Parsing hasil JSON Nekos API V4 ke format bot"""
+    """Helper Parse JSON"""
     img_url = item.get("url") or item.get("file_url")
     if not img_url: return None
 
@@ -280,12 +274,11 @@ def parse_nekos_item(item):
     }
 
 # ==========================================
-# 2. DOWNLOAD & SEND (FILE BASED - OLD STYLE)
+# 2. DOWNLOAD & SEND (FILE BASED)
 # ==========================================
 
 def process_image_to_disk(image_url, save_path):
     try:
-        # Download stream
         with requests.get(image_url, stream=True, timeout=30) as r:
             r.raise_for_status()
             with open(save_path, 'wb') as f:
@@ -293,10 +286,9 @@ def process_image_to_disk(image_url, save_path):
         
         if not os.path.exists(save_path): return False
         
-        # Convert & Resize (PIL)
         img = Image.open(save_path)
         if img.mode != 'RGB': img = img.convert('RGB')
-        img.thumbnail((2000, 2000)) # Resize biar aman
+        img.thumbnail((2000, 2000)) 
         img.save(save_path, "JPEG", quality=95)
         return True
     except Exception as e:
@@ -553,7 +545,6 @@ async def hunt_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     msg = await update.message.reply_text(f"🏹 <b>Hunting:</b> <i>{keywords}</i>...", parse_mode=ParseMode.HTML)
     
-    # Panggil logika baru fetch_master_source
     result = await fetch_master_source(specific_tags=keywords)
     
     if result:
