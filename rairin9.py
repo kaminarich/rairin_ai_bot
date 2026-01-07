@@ -14,19 +14,16 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from PIL import Image 
 
-# --- AUTO-INSTALL REQUIREMENTS NOTICE ---
-# Pastikan sudah: pip install python-telegram-bot python-dotenv requests cloudscraper groq Pillow
-
 # Telegram Imports
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, MessageHandler, CallbackQueryHandler, filters
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 
-# --- LOAD ENVIRONMENT VARIABLES (ROBUST) ---
+# --- LOAD ENVIRONMENT VARIABLES ---
 from dotenv import load_dotenv
 
-# Cari file .env di folder yang sama dengan script ini
+# Path Absolute untuk .env
 base_dir = Path(__file__).resolve().parent
 env_file = base_dir / ".env"
 load_dotenv(env_file)
@@ -42,9 +39,7 @@ from groq import Groq
 # --- CONFIGURATION ---
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 if not TOKEN:
-    print("❌ CRITICAL ERROR: 'TELEGRAM_TOKEN' tidak ditemukan di file .env!")
-    print(f"📂 Lokasi script: {base_dir}")
-    print("👉 Pastikan file .env ada di folder yang sama.")
+    print("❌ CRITICAL ERROR: 'TELEGRAM_TOKEN' not found in .env")
     sys.exit(1)
 
 try:
@@ -396,7 +391,7 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("...")
 
 # ==========================================
-# 4. COMMANDS
+# 4. COMMANDS & UTILS (DEFINED BEFORE MAIN)
 # ==========================================
 
 async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -415,6 +410,34 @@ async def help_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /afk [reason] - Set AFK\n"
         "• /report [msg] - Report bug"
     )
+    await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
+
+# --- AFK SYSTEM ---
+async def set_afk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reason = " ".join(context.args) if context.args else "Busy"
+    user = update.effective_user
+    uid = str(user.id)
+    db = load_data()
+    
+    if uid not in db["users"]: 
+        db["users"][uid] = {
+            "username": user.first_name, 
+            "handle": user.username, 
+            "collection": []
+        }
+        
+    db["users"][uid]["afk_status"] = True
+    db["users"][uid]["afk_reason"] = reason
+    db["users"][uid]["username"] = user.first_name
+    db["users"][uid]["handle"] = user.username 
+    save_data(db)
+    await update.message.reply_text(f"💤 <b>{user.first_name}</b> AFK: <i>{reason}</i>", parse_mode=ParseMode.HTML)
+
+# --- LEADERBOARD ---
+async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    db = load_data()
+    ranked = sorted([(d['username'], len(d.get('collection', []))) for d in db['users'].values()], key=lambda x: x[1], reverse=True)[:10]
+    txt = "🏆 <b>TOP COLLECTORS</b>\n" + "\n".join([f"{i+1}. {n} ({c})" for i, (n, c) in enumerate(ranked)])
     await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
 
 # --- REPORT SYSTEM ---
@@ -819,7 +842,7 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler('start', start_bot))
     app.add_handler(CommandHandler('help', help_bot))
     app.add_handler(CommandHandler('checkid', check_id))
-    app.add_handler(CommandHandler('afk', set_afk))
+    app.add_handler(CommandHandler('afk', set_afk)) # Ini sekarang aman karena set_afk sudah didefinisikan di atas
     app.add_handler(CommandHandler('leaderboard', leaderboard))
     
     app.add_handler(CommandHandler('getbini', get_bini))
@@ -837,11 +860,4 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(battle_callback, pattern='^(accept_battle|sel_)'))
     app.add_handler(CallbackQueryHandler(divorce_callback, pattern='^div_'))
     app.add_handler(CallbackQueryHandler(swing_callback, pattern='^swing_'))
-    app.add_handler(CallbackQueryHandler(feedback_callback, pattern='^fb_'))
-    
-    app.add_handler(MessageHandler(filters.Regex(r'^/mybini\d+$'), my_bini_detail))
-    app.add_handler(MessageHandler(filters.User(username="kaminarich") & filters.Regex(r'(?i)^(shutdown|terminate|suspend|activate|reactivate|turn on)'), admin_system_control))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_ai_chat))
-    
-    print("🟢 ALL SYSTEMS ONLINE! Waiting for updates...")
-    app.run_polling(drop_pending_updates=True)
+    app.
