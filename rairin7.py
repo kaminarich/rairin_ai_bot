@@ -437,10 +437,9 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (
         "🌸 <b>Hi, I'm Rairin!</b>\n"
-        "I'm an AI Waifu bot with Gacha & Image Gen features.\n\n"
-        "🔹 <code>/imagine [prompt]</code> - Generate image\n"
-        "🔹 <code>/getbini</code> - Roll gacha\n"
-        "🔹 Reply to me to chat!"
+        "I'm an AI bot at your Service, Honey.\n\n"
+        "🔹 use /help so i can help your need!"
+        "🔹 Reply or say myname to chat!"
     )
     await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
 
