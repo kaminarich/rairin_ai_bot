@@ -23,7 +23,7 @@ from telegram.error import BadRequest
 # --- LOAD ENVIRONMENT VARIABLES ---
 from dotenv import load_dotenv
 
-# Path Absolute
+# Path Absolute (Biar aman run dari mana aja)
 base_dir = Path(__file__).resolve().parent
 env_file = base_dir / ".env"
 load_dotenv(env_file)
@@ -142,7 +142,7 @@ async def async_get_request(url, params=None):
     return await loop.run_in_executor(None, lambda: scraper.get(url, params=params, timeout=10))
 
 # ==========================================
-# 1. GACHA & SEARCH LOGIC (SMART NEKOS API)
+# 1. GACHA & SEARCH LOGIC (FIXED NEKOS API)
 # ==========================================
 
 async def fetch_master_source(specific_tags=None):
@@ -151,35 +151,71 @@ async def fetch_master_source(specific_tags=None):
     
     # --- JIKA USER CARI SPESIFIK (/HUNT) ---
     if specific_tags:
-        query = specific_tags.strip()
-        print(f"🔍 Hunting ID for: {query}")
+        # HAPUS KARAKTER ANEH & JANGAN PAKAI BINTANG (*)
+        query = re.sub(r'[^\w\s\-\.]', '', specific_tags).strip()
+        print(f"🔍 Hunting ID for: '{query}'")
+        
         loop = asyncio.get_running_loop()
 
         def find_id(endpoint, search_query):
             try:
-                params = {"search": search_query, "limit": 1}
-                r = requests.get(f"{base_url}/{endpoint}", params=params, headers=headers, timeout=5)
+                # Cari 5 hasil, nanti kita filter
+                params = {"search": search_query, "limit": 5}
+                r = requests.get(f"{base_url}/{endpoint}", params=params, headers=headers, timeout=10)
                 if r.status_code == 200:
                     data = r.json()
                     items = data.get("items", []) if isinstance(data, dict) else data
+                    # Ambil yang pertama
                     if items and len(items) > 0:
-                        return {"id": items[0]["id"], "name": items[0]["name"], "type": endpoint}
-            except: pass
+                        top = items[0]
+                        print(f"   -> Found in {endpoint}: {top['name']} (ID: {top['id']})")
+                        return {"id": top["id"], "name": top["name"], "type": endpoint}
+            except Exception as e:
+                print(f"   -> Error searching {endpoint}: {e}")
             return None
 
-        # Parallel Search
+        # Jalankan pencarian parallel
+        # Kita cari di Characters, Tags, dan Artists
         task_char = loop.run_in_executor(None, lambda: find_id("characters", query))
         task_tag = loop.run_in_executor(None, lambda: find_id("tags", query))
+        task_artist = loop.run_in_executor(None, lambda: find_id("artists", query))
         
-        results = await asyncio.gather(task_char, task_tag)
-        match = results[0] or results[1]
+        # return_exceptions=True biar kalau satu error, yg lain tetep jalan
+        results = await asyncio.gather(task_char, task_tag, task_artist, return_exceptions=True)
+        
+        # Filter hasil yang error/None
+        valid_results = [r for r in results if isinstance(r, dict)]
+        
+        match = None
+        if valid_results:
+            # Prioritas: Character > Tag > Artist
+            # Cek Character dulu
+            for r in valid_results:
+                if r['type'] == 'characters':
+                    match = r
+                    break
+            # Kalau gak ada char, cek tag
+            if not match:
+                for r in valid_results:
+                    if r['type'] == 'tags':
+                        match = r
+                        break
+            # Kalau gak ada tag, ambil apa aja (artist)
+            if not match:
+                match = valid_results[0]
 
         if match:
-            print(f"✅ Match Found: {match['name']} ({match['type']})")
-            img_params = {"limit": 50, "rating": ["safe", "suggestive", "borderline", "explicit"], "sort": "random"}
+            print(f"✅ Final Match: {match['name']} ({match['type']})")
+            
+            img_params = {
+                "limit": 20, 
+                "rating": ["safe", "suggestive", "borderline", "explicit"],
+                "sort": "random"
+            }
             
             if match['type'] == 'characters': img_params['character'] = [match['id']]
             elif match['type'] == 'tags': img_params['tags'] = [match['id']]
+            elif match['type'] == 'artists': img_params['artist'] = [match['id']]
 
             try:
                 r = await loop.run_in_executor(None, lambda: requests.get(f"{base_url}/images", params=img_params, headers=headers, timeout=10))
@@ -187,8 +223,10 @@ async def fetch_master_source(specific_tags=None):
                     data = r.json()
                     items = data.get("items", []) if isinstance(data, dict) else data
                     if items: return parse_nekos_item(random.choice(items))
+                    else: print("❌ Found ID but images list is empty.")
             except Exception as e: print(f"Error fetch ID: {e}")
         else:
+            print("❌ Nothing found in Characters/Tags/Artists.")
             return None
 
     # --- RANDOM GACHA (/GETBINI) ---
@@ -285,7 +323,7 @@ async def smart_send_photo(update, image_url, caption, loading_msg=None):
             except: pass
 
 # ==========================================
-# 3. COMMANDS HANDLERS (DEFINISI DULU)
+# 3. COMMANDS & UTILS
 # ==========================================
 
 async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -457,7 +495,7 @@ async def set_bini_favorite(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"⭐ <b>{found['name']}</b> set as favorite!", parse_mode=ParseMode.HTML)
         else: await update.message.reply_text("ID not found.")
 
-# --- BATTLE & SOCIAL COMMANDS ---
+# --- BATTLE & SOCIAL ---
 async def battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try: bid = int(context.args[0])
     except: 
