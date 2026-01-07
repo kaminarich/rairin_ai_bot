@@ -23,7 +23,6 @@ from telegram.error import BadRequest
 # --- LOAD ENVIRONMENT VARIABLES ---
 from dotenv import load_dotenv
 
-# Path Absolute (Biar aman run dari mana aja)
 base_dir = Path(__file__).resolve().parent
 env_file = base_dir / ".env"
 load_dotenv(env_file)
@@ -137,142 +136,123 @@ def save_chat_history(user_id, history):
     data = {"last_update": datetime.now().isoformat(), "history": history}
     with open(path, 'w') as f: json.dump(data, f, indent=4)
 
-async def async_get_request(url, params=None): 
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, lambda: scraper.get(url, params=params, timeout=10))
-
 # ==========================================
-# 1. GACHA & SEARCH LOGIC (FIXED NEKOS API)
+# 1. GACHA & SEARCH LOGIC (NEKOS API V4 - SIMPLE)
 # ==========================================
 
 async def fetch_master_source(specific_tags=None):
     base_url = "https://api.nekosapi.com/v4"
     headers = {"User-Agent": "RairinBot/1.0"}
     
-    # --- JIKA USER CARI SPESIFIK (/HUNT) ---
-    if specific_tags:
-        # HAPUS KARAKTER ANEH & JANGAN PAKAI BINTANG (*)
-        query = re.sub(r'[^\w\s\-\.]', '', specific_tags).strip()
-        print(f"🔍 Hunting ID for: '{query}'")
-        
+    try:
         loop = asyncio.get_running_loop()
-
-        def find_id(endpoint, search_query):
-            try:
-                # Cari 5 hasil, nanti kita filter
-                params = {"search": search_query, "limit": 5}
-                r = requests.get(f"{base_url}/{endpoint}", params=params, headers=headers, timeout=10)
-                if r.status_code == 200:
-                    data = r.json()
-                    items = data.get("items", []) if isinstance(data, dict) else data
-                    # Ambil yang pertama
-                    if items and len(items) > 0:
-                        top = items[0]
-                        print(f"   -> Found in {endpoint}: {top['name']} (ID: {top['id']})")
-                        return {"id": top["id"], "name": top["name"], "type": endpoint}
-            except Exception as e:
-                print(f"   -> Error searching {endpoint}: {e}")
-            return None
-
-        # Jalankan pencarian parallel
-        # Kita cari di Characters, Tags, dan Artists
-        task_char = loop.run_in_executor(None, lambda: find_id("characters", query))
-        task_tag = loop.run_in_executor(None, lambda: find_id("tags", query))
-        task_artist = loop.run_in_executor(None, lambda: find_id("artists", query))
         
-        # return_exceptions=True biar kalau satu error, yg lain tetep jalan
-        results = await asyncio.gather(task_char, task_tag, task_artist, return_exceptions=True)
-        
-        # Filter hasil yang error/None
-        valid_results = [r for r in results if isinstance(r, dict)]
-        
-        match = None
-        if valid_results:
-            # Prioritas: Character > Tag > Artist
-            # Cek Character dulu
-            for r in valid_results:
-                if r['type'] == 'characters':
-                    match = r
-                    break
-            # Kalau gak ada char, cek tag
-            if not match:
-                for r in valid_results:
-                    if r['type'] == 'tags':
-                        match = r
-                        break
-            # Kalau gak ada tag, ambil apa aja (artist)
-            if not match:
-                match = valid_results[0]
-
-        if match:
-            print(f"✅ Final Match: {match['name']} ({match['type']})")
+        # --- A. LOGIKA /HUNT (BY TAGS) ---
+        if specific_tags:
+            query = specific_tags.strip()
+            print(f"🔍 Hunting via Tags: '{query}'")
             
-            img_params = {
-                "limit": 20, 
+            # Sesuai dokumentasi: Query "tags" = Array of strings
+            params = {
+                "tags": query,
+                "limit": 50, # Ambil banyak buat diacak
                 "rating": ["safe", "suggestive", "borderline", "explicit"],
-                "sort": "random"
+                "sort": "random" # Nekos V4 support sort random
             }
             
-            if match['type'] == 'characters': img_params['character'] = [match['id']]
-            elif match['type'] == 'tags': img_params['tags'] = [match['id']]
-            elif match['type'] == 'artists': img_params['artist'] = [match['id']]
+            # Request ke /images
+            def do_search():
+                r = requests.get(f"{base_url}/images", params=params, headers=headers, timeout=15)
+                r.raise_for_status()
+                return r.json()
 
-            try:
-                r = await loop.run_in_executor(None, lambda: requests.get(f"{base_url}/images", params=img_params, headers=headers, timeout=10))
-                if r.status_code == 200:
-                    data = r.json()
-                    items = data.get("items", []) if isinstance(data, dict) else data
-                    if items: return parse_nekos_item(random.choice(items))
-                    else: print("❌ Found ID but images list is empty.")
-            except Exception as e: print(f"Error fetch ID: {e}")
+            data = await loop.run_in_executor(None, do_search)
+            
+            # Handle Response (bisa list langsung atau dict dengan key 'items')
+            items = []
+            if isinstance(data, list):
+                items = data
+            elif isinstance(data, dict):
+                items = data.get("items", []) or data.get("results", [])
+
+            if items:
+                print(f"✅ Found {len(items)} images for '{query}'. Picking one.")
+                return parse_nekos_item(random.choice(items))
+            else:
+                print(f"❌ No images found for tag: {query}")
+                return None
+
+        # --- B. LOGIKA /GETBINI (RANDOM) ---
         else:
-            print("❌ Nothing found in Characters/Tags/Artists.")
-            return None
-
-    # --- RANDOM GACHA (/GETBINI) ---
-    else:
-        try:
-            loop = asyncio.get_running_loop()
             def do_random():
-                return requests.get(f"{base_url}/images/random", params={"limit": 1, "rating": ["safe", "suggestive"]}, headers=headers, timeout=10).json()
+                # Endpoint Random khusus
+                params = {"limit": 1, "rating": ["safe", "suggestive"]}
+                r = requests.get(f"{base_url}/images/random", params=params, headers=headers, timeout=15)
+                return r.json()
             
             data = await loop.run_in_executor(None, do_random)
-            items = data.get("items", []) if isinstance(data, dict) else data
-            if items: return parse_nekos_item(items[0])
-        except Exception as e: print(f"Error random: {e}")
+            
+            items = []
+            if isinstance(data, list): items = data
+            elif isinstance(data, dict): items = data.get("items", []) or data.get("results", [])
+            
+            if items:
+                return parse_nekos_item(items[0])
+            
+    except Exception as e:
+        print(f"⚠️ Nekos API Error: {e}")
     
     return None
 
 def parse_nekos_item(item):
+    """Helper Parse JSON Nekos V4"""
+    # Ambil URL (priority: url > file_url)
     img_url = item.get("url") or item.get("file_url")
     if not img_url: return None
 
-    char_name = None
+    # Parsing Nama Karakter
+    char_name = "Unknown"
     if "characters" in item and item["characters"]:
-        try: char_name = item["characters"][0].get("name") if isinstance(item["characters"][0], dict) else str(item["characters"][0])
+        try:
+            # Kadang list of objects, kadang list of IDs, kadang list of strings
+            c = item["characters"][0]
+            if isinstance(c, dict): char_name = c.get("name", "Unknown")
+            elif isinstance(c, str): char_name = c
         except: pass
     
+    # Parsing Nama Artist
     source_name = "NekosAPI"
     if "artist" in item and item["artist"]:
-        try: source_name = item["artist"].get("name") if isinstance(item["artist"], dict) else str(item["artist"])
+        try:
+            a = item["artist"]
+            if isinstance(a, dict): source_name = a.get("name", "NekosAPI")
+            elif isinstance(a, str): source_name = a
         except: pass
 
-    if not char_name:
-        is_original = False
-        if "tags" in item:
-            for t in item["tags"]:
-                tname = t.get("name", "").lower() if isinstance(t, dict) else str(t).lower()
-                if "original" in tname: is_original = True
-        char_name = "Original Character" if is_original else "Random Waifu"
+    # Fallback Name jika kosong
+    if char_name == "Unknown":
+        # Cek tags untuk clue
+        tags_list = item.get("tags", [])
+        tags_str = str(tags_list).lower()
+        if "original" in tags_str:
+            char_name = "Original Character"
+        else:
+            char_name = "Random Waifu"
 
-    return {"image": img_url, "name": char_name, "source": source_name, "link": img_url}
+    return {
+        "image": img_url,
+        "name": char_name,
+        "source": source_name,
+        "link": img_url
+    }
 
 # ==========================================
-# 2. DOWNLOAD & SEND
+# 2. DOWNLOAD & SEND (FILE BASED - OLD STYLE)
 # ==========================================
 
 def process_image_to_disk(image_url, save_path):
     try:
+        # Download dengan Requests (bukan cloudscraper) biar konsisten
         with requests.get(image_url, stream=True, timeout=30) as r:
             r.raise_for_status()
             with open(save_path, 'wb') as f:
@@ -280,13 +260,14 @@ def process_image_to_disk(image_url, save_path):
         
         if not os.path.exists(save_path): return False
         
+        # Validasi & Convert via PIL
         img = Image.open(save_path)
         if img.mode != 'RGB': img = img.convert('RGB')
         img.thumbnail((2000, 2000)) 
         img.save(save_path, "JPEG", quality=95)
         return True
     except Exception as e:
-        print(f"Error IMG: {e}")
+        print(f"Error Processing IMG: {e}")
         return False
 
 async def smart_send_photo(update, image_url, caption, loading_msg=None):
@@ -301,21 +282,22 @@ async def smart_send_photo(update, image_url, caption, loading_msg=None):
         loop = asyncio.get_running_loop()
         success = await loop.run_in_executor(None, lambda: process_image_to_disk(image_url, temp_path))
 
-        if not success: raise Exception("Gagal proses gambar.")
+        if not success: raise Exception("Gagal download/convert gambar.")
 
         if loading_msg:
             try: await loading_msg.delete()
             except: pass
         
         with open(temp_path, 'rb') as f:
-            try: await update.message.reply_photo(photo=f, caption=caption, parse_mode=ParseMode.HTML)
+            try:
+                await update.message.reply_photo(photo=f, caption=caption, parse_mode=ParseMode.HTML)
             except BadRequest:
                 f.seek(0)
                 await update.message.reply_document(document=f, caption=caption, parse_mode=ParseMode.HTML)
     except Exception as e:
         try:
             if loading_msg: await loading_msg.delete()
-            await update.message.reply_text(f"⚠️ Error: {str(e)[:50]}", parse_mode=ParseMode.HTML)
+            await update.message.reply_text(f"⚠️ Error: {str(e)[:100]}", parse_mode=ParseMode.HTML)
         except: pass
     finally:
         if os.path.exists(temp_path):
@@ -323,7 +305,7 @@ async def smart_send_photo(update, image_url, caption, loading_msg=None):
             except: pass
 
 # ==========================================
-# 3. COMMANDS & UTILS
+# 3. COMMAND HANDLERS
 # ==========================================
 
 async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -334,7 +316,7 @@ async def help_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📚 <b>COMMANDS</b>\n"
         "• /getbini - Random Waifu\n"
         "• /mybini - Collection\n"
-        "• /hunt [name] - Cari Character/Tag\n"
+        "• /hunt [tag] - Cari via Tag (Nekos)\n"
         "• /bini [ID] - Set Favorite\n"
         "• /battle [ID] - Battle\n"
         "• /swing [MyID] [TargetID] - Trade\n"
@@ -370,15 +352,17 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def hunt_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keywords = " ".join(context.args)
     if not keywords:
-        await update.message.reply_text("⚠️ Usage: `/hunt <name>`", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("⚠️ Usage: `/hunt <tag_name>`", parse_mode=ParseMode.MARKDOWN)
         return
+    
     msg = await update.message.reply_text(f"🏹 <b>Hunting:</b> <i>{keywords}</i>...", parse_mode=ParseMode.HTML)
     result = await fetch_master_source(specific_tags=keywords)
+    
     if result:
         cap = f"🏹 <b>RESULT</b>\nQuery: <i>{keywords}</i>\nName: <b>{result['name']}</b>\nSource: {result['source']}\n🔗 <a href='{result['link']}'>Link</a>"
         await smart_send_photo(update, result['image'], cap, msg)
     else: 
-        await msg.edit_text(f"❌ Nothing found for: <b>{keywords}</b>", parse_mode=ParseMode.HTML)
+        await msg.edit_text(f"❌ Nothing found for tag: <b>{keywords}</b>", parse_mode=ParseMode.HTML)
 
 async def get_bini(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ALLOWED_GROUP_ID != 0 and update.effective_chat.id != ALLOWED_GROUP_ID: return
@@ -698,64 +682,6 @@ async def swing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try: await q.edit_message_text(f"🤝 <b>TRADE SUCCESS!</b>\n\n👤 {trade['p1_name']} got <b>{trade['c2']['name']}</b>\n👤 {trade['p2_name']} got <b>{trade['c1']['name']}</b>", parse_mode=ParseMode.HTML)
     except: pass
 
-# --- REPORT & FEEDBACK ---
-def get_reports_path():
-    if not os.path.exists('database'): os.makedirs('database')
-    return 'database/reports.json'
-
-def save_report_local(report_data):
-    file_path = get_reports_path()
-    reports = []
-    if os.path.exists(file_path):
-        try:
-            with open(file_path, 'r') as f:
-                content = f.read()
-                if content.strip(): reports = json.loads(content)
-        except: reports = []
-    reports.append(report_data)
-    with open(file_path, 'w') as f: json.dump(reports, f, indent=4)
-
-async def report_bug(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    msg_content = " ".join(context.args)
-    if not msg_content:
-        await update.message.reply_text("⚠️ Use: `/report msg`", parse_mode=ParseMode.MARKDOWN)
-        return
-    rep_id = str(uuid.uuid4())[:6]
-    data = {"id": rep_id, "date": datetime.now().strftime("%Y-%m-%d %H:%M"), "uid": user.id, "user": user.first_name, "msg": msg_content}
-    save_report_local(data)
-    await update.message.reply_text(f"✅ Report ID: `{rep_id}`", parse_mode=ParseMode.MARKDOWN)
-
-async def feedback_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.username != "kaminarich": return
-    file_path = get_reports_path()
-    if not os.path.exists(file_path):
-        await update.message.reply_text("📂 Empty.")
-        return
-    try:
-        with open(file_path, 'r') as f: reports = json.load(f)
-    except: reports = []
-    if not reports:
-        await update.message.reply_text("📂 Empty.")
-        return
-    txt = f"📋 <b>REPORTS ({len(reports)})</b>\n\n"
-    for r in reports[-5:]:
-        txt += f"🆔 <b>{r.get('id')}</b> | {r.get('date')}\n👤 {r.get('user')}\n💬 {r.get('msg')}\n{'-'*15}\n"
-    kb = [[InlineKeyboardButton("📥 JSON", callback_data="fb_down"), InlineKeyboardButton("🗑️ Clear", callback_data="fb_clear")]]
-    await update.message.reply_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
-
-async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    try: await q.answer()
-    except: pass 
-    if q.from_user.username != "kaminarich": return
-    file_path = get_reports_path()
-    if q.data == "fb_clear":
-        with open(file_path, 'w') as f: json.dump([], f)
-        await q.edit_message_text("🗑️ Cleared.")
-    elif q.data == "fb_down":
-        if os.path.exists(file_path): await q.message.reply_document(document=open(file_path, 'rb'), caption="Log")
-
 # --- AI & SYSTEM ---
 async def admin_system_control(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global BOT_SLEEP_MODE
@@ -860,6 +786,64 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("...")
 
+# --- REPORT SYSTEM ---
+def get_reports_path():
+    if not os.path.exists('database'): os.makedirs('database')
+    return 'database/reports.json'
+
+def save_report_local(report_data):
+    file_path = get_reports_path()
+    reports = []
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, 'r') as f:
+                content = f.read()
+                if content.strip(): reports = json.loads(content)
+        except: reports = []
+    reports.append(report_data)
+    with open(file_path, 'w') as f: json.dump(reports, f, indent=4)
+
+async def report_bug(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    msg_content = " ".join(context.args)
+    if not msg_content:
+        await update.message.reply_text("⚠️ Use: `/report msg`", parse_mode=ParseMode.MARKDOWN)
+        return
+    rep_id = str(uuid.uuid4())[:6]
+    data = {"id": rep_id, "date": datetime.now().strftime("%Y-%m-%d %H:%M"), "uid": user.id, "user": user.first_name, "msg": msg_content}
+    save_report_local(data)
+    await update.message.reply_text(f"✅ Report ID: `{rep_id}`", parse_mode=ParseMode.MARKDOWN)
+
+async def feedback_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.username != "kaminarich": return
+    file_path = get_reports_path()
+    if not os.path.exists(file_path):
+        await update.message.reply_text("📂 Empty.")
+        return
+    try:
+        with open(file_path, 'r') as f: reports = json.load(f)
+    except: reports = []
+    if not reports:
+        await update.message.reply_text("📂 Empty.")
+        return
+    txt = f"📋 <b>REPORTS ({len(reports)})</b>\n\n"
+    for r in reports[-5:]:
+        txt += f"🆔 <b>{r.get('id')}</b> | {r.get('date')}\n👤 {r.get('user')}\n💬 {r.get('msg')}\n{'-'*15}\n"
+    kb = [[InlineKeyboardButton("📥 JSON", callback_data="fb_down"), InlineKeyboardButton("🗑️ Clear", callback_data="fb_clear")]]
+    await update.message.reply_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+
+async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    try: await q.answer()
+    except: pass 
+    if q.from_user.username != "kaminarich": return
+    file_path = get_reports_path()
+    if q.data == "fb_clear":
+        with open(file_path, 'w') as f: json.dump([], f)
+        await q.edit_message_text("🗑️ Cleared.")
+    elif q.data == "fb_down":
+        if os.path.exists(file_path): await q.message.reply_document(document=open(file_path, 'rb'), caption="Log")
+
 async def check_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"`{update.effective_chat.id}`", parse_mode=ParseMode.MARKDOWN)
 
@@ -868,7 +852,6 @@ if __name__ == '__main__':
     
     app = ApplicationBuilder().token(TOKEN).build()
     
-    # Command Handlers
     app.add_handler(CommandHandler('start', start_bot))
     app.add_handler(CommandHandler('help', help_bot))
     app.add_handler(CommandHandler('checkid', check_id))
@@ -886,14 +869,12 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler('report', report_bug))
     app.add_handler(CommandHandler('feedback', feedback_list))
     
-    # Callback Handlers
     app.add_handler(CallbackQueryHandler(bini_pagination, pattern='^bini_page_'))
     app.add_handler(CallbackQueryHandler(battle_callback, pattern='^(accept_battle|sel_)'))
     app.add_handler(CallbackQueryHandler(divorce_callback, pattern='^div_'))
     app.add_handler(CallbackQueryHandler(swing_callback, pattern='^swing_'))
     app.add_handler(CallbackQueryHandler(feedback_callback, pattern='^fb_'))
     
-    # Message Handlers
     app.add_handler(MessageHandler(filters.Regex(r'^/mybini\d+$'), my_bini_detail))
     app.add_handler(MessageHandler(filters.User(username="kaminarich") & filters.Regex(r'(?i)^(shutdown|terminate|suspend|activate|reactivate|turn on)'), admin_system_control))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_ai_chat))
