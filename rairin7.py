@@ -10,6 +10,7 @@ import urllib3
 import requests
 from io import BytesIO 
 from datetime import datetime, timedelta
+from PIL import Image # KEMBALIKAN PIL UNTUK PROSES GAMBAR
 
 # Telegram Imports
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity
@@ -50,12 +51,13 @@ else:
     HF_TOKENS = []
     print("⚠️ WARNING: No Hugging Face Tokens found in .env")
 
-# Model: Stable Diffusion XL Base 1.0 (Official & Stabil - Menggantikan yang error)
+# Model: Stable Diffusion XL Base 1.0 (Official & Stabil)
 HF_API_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
 
 # FILES
 DATA_FILE = 'database/database_bini.json'
 MEMORY_DIR = 'chat_memory' 
+TEMP_DIR = 'temp_downloads' # KEMBALIKAN FOLDER TEMP
 
 # GLOBAL STATE
 PENDING_BATTLES = {}
@@ -101,16 +103,29 @@ You are Rairin.
    - Explain the code briefly if needed.
 """
 
-# --- SOURCE TAGS ---
+# --- SOURCE TAGS (DIPERLUAS) ---
 BOORU_THEMES = [
+    # Gacha Games
     "genshin_impact", "blue_archive", "honkai:_star_rail", "azur_lane", 
-    "fate/grand_order", "arknights", "hololive", "touhou", 
-    "wuthering_waves", "nikke:_goddess_of_victory", "umamusume",
+    "fate/grand_order", "arknights", "wuthering_waves", "nikke:_goddess_of_victory", 
+    "umamusume", "princess_connect!", "girls'_frontline", "granblue_fantasy",
+    "honkai_impact_3rd", "path_to_nowhere", "alchemy_stars",
+    # Anime Popular
     "frieren_no_sousou", "spy_x_family", "chainsaw_man", "lycoris_recoil",
-    "nier:_automata", "xenoblade", "princess_connect!"
+    "nier:_automata", "xenoblade", "re:zero_kara_hajimeru_isekai_seikatsu",
+    "mushoku_tensei", "oshi_no_ko", "bocchi_the_rock!", "kaguya-sama_wa_kokurasetai",
+    "sword_art_online", "gotoubun_no_hanayome", "date_a_live", "konosuba",
+    # Vtubers
+    "hololive", "nijisanji", "vshojo",
+    # General Themes (Backup)
+    "original", "school_uniform", "maid", "swimsuit", "kemonomimi"
 ]
 
-WAIFU_TAGS = ['maid', 'waifu', 'marin-kitagawa', 'mori-calliope', 'raiden-shogun', 'oppai', 'selfies', 'kamisato-ayaka', 'uniform', 'ass', 'hentai', 'milf']
+WAIFU_TAGS = [
+    'maid', 'waifu', 'marin-kitagawa', 'mori-calliope', 'raiden-shogun', 
+    'oppai', 'selfies', 'kamisato-ayaka', 'uniform', 'ass', 'hentai', 'milf',
+    'succubus', 'nurse', 'office_lady', 'kimono', 'bunny_girl'
+]
 
 # --- DATABASE UTILS ---
 def ensure_directory_exists(file_path):
@@ -151,7 +166,7 @@ async def async_get_request(url, params=None):
     return await loop.run_in_executor(None, lambda: scraper.get(url, params=params, timeout=10))
 
 # ==========================================
-# 1. GACHA & SEARCH LOGIC (OPTIMIZED)
+# 1. GACHA & SEARCH LOGIC
 # ==========================================
 
 def parse_general_results(posts, source_name):
@@ -192,11 +207,15 @@ async def fetch_master_source(specific_tags=None):
     
     if specific_tags: query = f"{specific_tags} -1boy -shota -otoko"
     else:
-        if random.random() > 0.5:
+        # LOGIC PENCARIAN DIPERLUAS
+        dice = random.random()
+        if dice > 0.3:
+            # 70% Chance cari berdasarkan tema Anime Populer
             theme = random.choice(BOORU_THEMES)
             query = f"{theme} 1girl -1boy -shota order:random"
         else:
-            query = "1girl -1boy -shota rating:safe order:random"
+            # 30% Chance cari generic high quality
+            query = "1girl -1boy -shota rating:safe score:>10 order:random"
 
     sources = [
         {"name": "Safebooru", "url": "https://safebooru.org/index.php?page=dapi&s=post&q=index&json=1", "type": "gelbooru"},
@@ -241,55 +260,87 @@ async def fetch_master_source(specific_tags=None):
     return final_list[0]
 
 # ==========================================
-# 2. IMAGE GEN (HUGGING FACE) & DOWNLOADER
+# 2. DOWNLOAD & SEND (OLD STYLE - FILE BASED)
 # ==========================================
+# Ini metode lama: Download -> Simpan File -> Resize/Convert -> Kirim -> Hapus
+# Lebih lambat tapi JAUH lebih stabil.
+
+def process_image_to_disk(image_url, save_path):
+    try:
+        with scraper.get(image_url, stream=True, timeout=30) as r:
+            r.raise_for_status()
+            with open(save_path, 'wb') as f:
+                for chunk in r.iter_content(8192): f.write(chunk)
+        
+        # Validasi & Konversi pake PIL
+        img = Image.open(save_path)
+        if img.mode != 'RGB': img = img.convert('RGB')
+        # Resize sedikit kalau kegedean (biar telegram gak nolak)
+        img.thumbnail((2000, 2000)) 
+        img.save(save_path, "JPEG", quality=90)
+        return True
+    except Exception as e:
+        print(f"Error processing image: {e}")
+        return False
 
 async def smart_send_photo(update, image_url, caption, loading_msg=None):
+    if not os.path.exists(TEMP_DIR): os.makedirs(TEMP_DIR)
+    
+    # Nama file sementara
+    temp_path = os.path.join(TEMP_DIR, f"{uuid.uuid4()}.jpg")
+    
     try:
         if loading_msg: 
-            try: await loading_msg.edit_text("⬇️ <i>Downloading...</i>", parse_mode=ParseMode.HTML)
+            try: await loading_msg.edit_text("⬇️ <i>Downloading & Processing...</i>", parse_mode=ParseMode.HTML)
             except: pass
 
         loop = asyncio.get_running_loop()
-        def download_to_ram():
-            resp = scraper.get(image_url, stream=True, timeout=15)
-            resp.raise_for_status()
-            return BytesIO(resp.content)
-        
-        image_data = await loop.run_in_executor(None, download_to_ram)
-        image_data.name = "image.jpg"
+        # Jalankan download + convert di thread terpisah (blocking I/O)
+        success = await loop.run_in_executor(None, lambda: process_image_to_disk(image_url, temp_path))
+
+        if not success: raise Exception("Failed to process image.")
 
         if loading_msg:
             try: await loading_msg.delete()
             except: pass
         
-        try: await update.message.reply_photo(photo=image_data, caption=caption, parse_mode=ParseMode.HTML)
-        except BadRequest:
-            image_data.seek(0)
-            await update.message.reply_document(document=image_data, caption=caption, parse_mode=ParseMode.HTML)
-
+        # Kirim file dari disk
+        with open(temp_path, 'rb') as f:
+            try:
+                await update.message.reply_photo(photo=f, caption=caption, parse_mode=ParseMode.HTML)
+            except BadRequest:
+                # Fallback: Kalau gagal kirim foto, kirim sebagai dokumen
+                f.seek(0)
+                await update.message.reply_document(document=f, caption=caption, parse_mode=ParseMode.HTML)
     except Exception as e:
         try:
             if loading_msg: await loading_msg.delete()
             await update.message.reply_text(f"⚠️ Failed: {str(e)[:100]}\n🔗 <a href='{image_url}'>Source Link</a>", parse_mode=ParseMode.HTML)
         except: pass
+    finally:
+        # Bersihkan file sampah
+        if os.path.exists(temp_path):
+            try: os.remove(temp_path)
+            except: pass
 
+# ==========================================
+# 3. IMAGE GEN (HUGGING FACE) - TETAP RAM
+# ==========================================
+# Khusus ini tetap RAM karena output API sudah pasti valid
 async def generate_image_hf(prompt):
     if not HF_TOKENS:
         raise Exception("⚠️ No Hugging Face tokens found in .env!")
 
-    # Pilih token secara acak
     token = random.choice(HF_TOKENS)
     headers = {"Authorization": f"Bearer {token}"}
     
-    # Prompt Enhancer
     final_prompt = f"masterpiece, best quality, {prompt}, anime style, vivid colors"
     
     payload = {
         "inputs": final_prompt,
         "parameters": {
             "negative_prompt": "nsfw, lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry, 3d, realistic",
-            "width": 1024, # Stable Diffusion XL bisa 1024x1024
+            "width": 1024, 
             "height": 1024, 
             "guidance_scale": 7.5, 
             "num_inference_steps": 30
@@ -317,7 +368,7 @@ async def generate_image_hf(prompt):
         raise e
 
 # ==========================================
-# 3. AI HANDLER (GROQ)
+# 4. AI HANDLER (GROQ)
 # ==========================================
 async def admin_system_control(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global BOT_SLEEP_MODE
@@ -422,24 +473,24 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         history.append({"role": "assistant", "content": response_text})
         save_chat_history(uid, history[-10:])
         
-        # Try Markdown for Code Blocks
         try:
             await update.message.reply_text(response_text, parse_mode=ParseMode.MARKDOWN)
         except BadRequest:
-            await update.message.reply_text(response_text) # Fallback Plain Text
+            await update.message.reply_text(response_text) 
     else:
         await update.message.reply_text("...")
 
 # ==========================================
-# 4. COMMANDS
+# 5. COMMANDS
 # ==========================================
 
 async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (
         "🌸 <b>Hi, I'm Rairin!</b>\n"
-        "I'm an AI bot at your Service, Honey.\n\n"
-        "🔹 use /help so i can help your need!"
-        "🔹 Reply or say myname to chat!"
+        "I'm Rairin!.\n\n"
+        "🔹 Please type <code>/help</code> so i can help you!.\n"
+        "🔹 <code>/report</code> - To Report Bugs on Module\n"
+        "🔹 Reply or call my name to chat!"
     )
     await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
 
