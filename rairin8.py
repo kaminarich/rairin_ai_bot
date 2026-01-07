@@ -136,98 +136,105 @@ async def async_get_request(url, params=None):
 
 async def fetch_master_source(specific_tags=None):
     """
-    Logika Pintar Nekos API:
-    1. Jika /hunt <query>: Cari ID Character/Tag/Artist dulu.
-    2. Grep 50-100 gambar dari ID tersebut.
-    3. Acak hasilnya.
+    Logika:
+    1. Jika specific_tags (Hunt): Cari ID Character/Tag/Artist dulu -> Fetch Images by ID -> Randomize.
+    2. Jika Kosong (Getbini): Fetch Random Image langsung.
     """
     base_url = "https://api.nekosapi.com/v4"
     headers = {"User-Agent": "RairinBot/1.0"}
     
-    # --- LOGIKA 1: PENCARIAN SPESIFIK (/HUNT) ---
+    # --- A. LOGIKA PENCARIAN SPESIFIK (/HUNT) ---
     if specific_tags:
-        print(f"🔍 Searching Nekos ID for: {specific_tags}")
-        query = specific_tags.strip().lower()
+        query = specific_tags.strip()
+        print(f"🔍 Hunting ID for: {query}")
         
-        # Helper untuk mencari ID
-        def search_id(endpoint):
+        # Fungsi Helper cari ID di endpoint tertentu
+        def find_id(endpoint, search_query):
             try:
-                # Limit 5 biar cepet, kita cuma butuh yang paling cocok
-                r = requests.get(f"{base_url}/{endpoint}", params={"search": query, "limit": 5}, headers=headers, timeout=5)
+                # Cari berdasarkan nama, limit 1 yang paling cocok
+                params = {"search": search_query, "limit": 1}
+                r = requests.get(f"{base_url}/{endpoint}", params=params, headers=headers, timeout=5)
                 if r.status_code == 200:
-                    res = r.json()
-                    # Cek 'results' (API v4 standard)
-                    items = res.get("results", []) if isinstance(res, dict) else res
+                    data = r.json()
+                    # API V4 mengembalikan list di dalam 'items' atau langsung list
+                    items = data.get("items", []) if isinstance(data, dict) else data
+                    
                     if items and len(items) > 0:
-                        return items[0]["id"]
-            except: pass
+                        item = items[0]
+                        return {"id": item["id"], "name": item["name"], "type": endpoint}
+            except Exception as e:
+                print(f"Error searching {endpoint}: {e}")
             return None
 
-        # Jalankan pencarian ID secara parallel (Biar kenceng)
         loop = asyncio.get_running_loop()
         
-        # Prioritas: Character > Tag > Artist
-        # Misal user cari "Violet Evergarden", kita mau Characternya, bukan tag "violet" (warna)
-        char_task = loop.run_in_executor(None, lambda: search_id("characters"))
-        tag_task = loop.run_in_executor(None, lambda: search_id("tags"))
-        artist_task = loop.run_in_executor(None, lambda: search_id("artists"))
+        # Cari di 3 tempat sekaligus: Characters, Artists, Tags (Categories)
+        # Kita pakai asyncio.gather biar cepat
+        task_char = loop.run_in_executor(None, lambda: find_id("characters", query))
+        task_tag = loop.run_in_executor(None, lambda: find_id("tags", query)) # Tags = Categories
+        task_artist = loop.run_in_executor(None, lambda: find_id("artists", query))
         
-        char_id, tag_id, artist_id = await asyncio.gather(char_task, tag_task, artist_task)
+        results = await asyncio.gather(task_char, task_tag, task_artist)
+        
+        # Prioritas: Character > Tag > Artist
+        # Misal: "Violet Evergarden" (Char) lebih prioritas daripada tag
+        best_match = results[0] or results[1] or results[2]
 
-        # Siapkan parameter untuk fetch gambar
-        image_params = {
-            "limit": 50, # GREP 50 GAMBAR
-            "rating": ["safe", "suggestive", "borderline", "explicit"], # Semua rating karena spesifik search
-            "sort": "random" # Biar API juga bantu ngacak
-        }
+        if best_match:
+            match_id = best_match["id"]
+            match_type = best_match["type"]
+            match_name = best_match["name"]
+            print(f"✅ Found Match: {match_name} (ID: {match_id}, Type: {match_type})")
 
-        # Tentukan filter berdasarkan hasil ID yang ketemu
-        if char_id:
-            image_params["character"] = [char_id]
-            print(f"✅ Found Character ID: {char_id}")
-        elif artist_id:
-            image_params["artist"] = [artist_id]
-            print(f"✅ Found Artist ID: {artist_id}")
-        elif tag_id:
-            image_params["tags"] = [tag_id]
-            print(f"✅ Found Tag ID: {tag_id}")
+            # FETCH GAMBAR BERDASARKAN ID
+            # Parameter untuk fetch gambar
+            img_params = {
+                "limit": 50, # Ambil 50 gambar (Grep)
+                "rating": ["safe", "suggestive", "borderline", "explicit"], # Semua rating
+                "sort": "random" # Biar server bantu ngacak juga
+            }
+            
+            # Set filter berdasarkan tipe yang ketemu
+            if match_type == "characters":
+                img_params["character"] = [match_id]
+            elif match_type == "tags":
+                img_params["tags"] = [match_id]
+            elif match_type == "artists":
+                img_params["artist"] = [match_id]
+
+            try:
+                # Request gambar
+                r = await loop.run_in_executor(None, lambda: requests.get(f"{base_url}/images", params=img_params, headers=headers, timeout=10))
+                if r.status_code == 200:
+                    img_data = r.json()
+                    items = img_data.get("items", []) if isinstance(img_data, dict) else img_data
+                    
+                    if items:
+                        # ACAK DARI HASIL YANG SESUAI
+                        selected_item = random.choice(items)
+                        return parse_nekos_item(selected_item)
+                    else:
+                        print("❌ ID found but no images available.")
+            except Exception as e:
+                print(f"Error fetching images by ID: {e}")
         else:
-            print("❌ ID not found, trying fuzzy search...")
-            # Kalau ID gak ketemu sama sekali, Nekos API agak susah search string langsung di /images.
-            # Kita return None biar bot bilang "Gak nemu" daripada ngasih gambar random gak jelas.
-            return None 
+            print("❌ No matching ID found.")
+            return None # Kalau gak nemu ID, mending gagal daripada ngasih gambar random salah
 
-        # FETCH GAMBAR DENGAN ID YANG DITEMUKAN
-        try:
-            r = await loop.run_in_executor(None, lambda: requests.get(f"{base_url}/images", params=image_params, headers=headers, timeout=10))
-            if r.status_code == 200:
-                data = r.json()
-                items = data.get("results", []) if isinstance(data, dict) else data
-                
-                if items:
-                    # GREP & ACAK: Dari 50 item, pilih 1
-                    item = random.choice(items)
-                    return parse_nekos_item(item)
-        except Exception as e:
-            print(f"Error fetching specific images: {e}")
-            return None
-
-    # --- LOGIKA 2: GACHA RANDOM (/GETBINI) ---
+    # --- B. LOGIKA RANDOM GACHA (/GETBINI) ---
     else:
-        # Langsung tembak endpoint random
         try:
             loop = asyncio.get_running_loop()
             def do_random():
-                # Limit 1 sudah cukup kalau random murni
+                # Endpoint random murni
                 r = requests.get(f"{base_url}/images/random", params={"limit": 1, "rating": ["safe", "suggestive"]}, headers=headers, timeout=10)
                 return r.json()
             
             data = await loop.run_in_executor(None, do_random)
-            # Handle kalau return list atau dict
-            if isinstance(data, list) and data:
-                return parse_nekos_item(data[0])
-            elif isinstance(data, dict) and "results" in data:
-                 if data["results"]: return parse_nekos_item(random.choice(data["results"]))
+            
+            items = data.get("items", []) if isinstance(data, dict) else data
+            if items:
+                return parse_nekos_item(items[0])
         
         except Exception as e:
             print(f"Error random gacha: {e}")
@@ -235,7 +242,7 @@ async def fetch_master_source(specific_tags=None):
     return None
 
 def parse_nekos_item(item):
-    """Helper untuk merapikan data JSON dari Nekos API"""
+    """Parsing hasil JSON Nekos API V4 ke format bot"""
     img_url = item.get("url") or item.get("file_url")
     if not img_url: return None
 
@@ -255,7 +262,7 @@ def parse_nekos_item(item):
             source_name = a.get("name") if isinstance(a, dict) else str(a)
         except: pass
 
-    # Fallback jika nama kosong
+    # Fallback Name
     if not char_name:
         is_original = False
         if "tags" in item:
@@ -278,7 +285,7 @@ def parse_nekos_item(item):
 
 def process_image_to_disk(image_url, save_path):
     try:
-        # Download
+        # Download stream
         with requests.get(image_url, stream=True, timeout=30) as r:
             r.raise_for_status()
             with open(save_path, 'wb') as f:
@@ -545,11 +552,15 @@ async def hunt_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Usage: `/hunt <keywords>`", parse_mode=ParseMode.MARKDOWN)
         return
     msg = await update.message.reply_text(f"🏹 <b>Hunting:</b> <i>{keywords}</i>...", parse_mode=ParseMode.HTML)
+    
+    # Panggil logika baru fetch_master_source
     result = await fetch_master_source(specific_tags=keywords)
+    
     if result:
         cap = f"🏹 <b>RESULT</b>\nQuery: <i>{keywords}</i>\nName: <b>{result['name']}</b>\nSource: {result['source']}\n🔗 <a href='{result['link']}'>Link</a>"
         await smart_send_photo(update, result['image'], cap, msg)
-    else: await msg.edit_text(f"❌ Nothing found for: <b>{keywords}</b>", parse_mode=ParseMode.HTML)
+    else: 
+        await msg.edit_text(f"❌ Nothing found for: <b>{keywords}</b>", parse_mode=ParseMode.HTML)
 
 async def get_bini(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if ALLOWED_GROUP_ID != 0 and update.effective_chat.id != ALLOWED_GROUP_ID: return
