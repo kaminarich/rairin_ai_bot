@@ -487,7 +487,7 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (
         "🌸 <b>Hi, I'm Rairin!</b>\n"
-        "I'm Rairin!.\n\n"
+        "Your lovely assistant is here!.\n\n"
         "🔹 Please type <code>/help</code> so i can help you!.\n"
         "🔹 <code>/report</code> - To Report Bugs on Module\n"
         "🔹 Reply or call my name to chat!"
