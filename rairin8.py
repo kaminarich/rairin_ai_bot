@@ -23,7 +23,7 @@ from telegram.error import BadRequest
 # --- LOAD ENVIRONMENT VARIABLES ---
 from dotenv import load_dotenv
 
-# Path Absolute untuk .env
+# Path Absolute
 base_dir = Path(__file__).resolve().parent
 env_file = base_dir / ".env"
 load_dotenv(env_file)
@@ -39,7 +39,7 @@ from groq import Groq
 # --- CONFIGURATION ---
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 if not TOKEN:
-    print("❌ CRITICAL ERROR: 'TELEGRAM_TOKEN' not found in .env")
+    print("❌ CRITICAL ERROR: 'TELEGRAM_TOKEN' not found.")
     sys.exit(1)
 
 try:
@@ -54,7 +54,7 @@ if groq_env:
     print(f"✅ Loaded {len(GROQ_KEYS)} Groq Keys.")
 else:
     GROQ_KEYS = []
-    print("⚠️ WARNING: No Groq Keys found in .env")
+    print("⚠️ WARNING: No Groq Keys found.")
 
 # FILES
 DATA_FILE = base_dir / 'database' / 'database_bini.json'
@@ -285,113 +285,7 @@ async def smart_send_photo(update, image_url, caption, loading_msg=None):
             except: pass
 
 # ==========================================
-# 3. AI HANDLER
-# ==========================================
-async def admin_system_control(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global BOT_SLEEP_MODE
-    user = update.effective_user
-    msg = update.message.text.lower().strip()
-
-    if user.username != "kaminarich": return
-
-    if msg in ["shutdown", "terminate", "suspend"]:
-        if not BOT_SLEEP_MODE:
-            BOT_SLEEP_MODE = True
-            await update.message.reply_text("<b>System Sleeping...</b>", parse_mode=ParseMode.HTML)
-        return
-
-    if any(x in msg for x in ["activate", "wake up"]):
-        if BOT_SLEEP_MODE:
-            BOT_SLEEP_MODE = False
-            await update.message.reply_text("<b>System Online.</b>", parse_mode=ParseMode.HTML)
-        return
-
-async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if BOT_SLEEP_MODE: return
-    user_msg = update.message.text
-    if not user_msg: return
-    user = update.effective_user
-    uid = str(user.id)
-    db = load_data()
-    
-    # Save user data
-    if uid in db["users"]:
-        db["users"][uid]["handle"] = user.username 
-        db["users"][uid]["username"] = user.first_name
-        save_data(db)
-    
-    # AFK Disable Logic
-    if uid in db["users"] and db["users"][uid].get("afk_status"):
-        db["users"][uid]["afk_status"] = False
-        save_data(db)
-        await update.message.reply_text(f"👋 Welcome back <b>{user.first_name}</b>!", parse_mode=ParseMode.HTML)
-
-    # AFK Check Logic
-    afk_targets = set()
-    if update.message.reply_to_message:
-        afk_targets.add(str(update.message.reply_to_message.from_user.id))
-    
-    if update.message.entities:
-        for entity in update.message.entities:
-            target_uid = None
-            if entity.type == MessageEntity.TEXT_MENTION: target_uid = str(entity.user.id)
-            elif entity.type == MessageEntity.MENTION:
-                clean = user_msg[entity.offset:entity.offset + entity.length].replace('@', '')
-                for db_uid, db_data in db["users"].items():
-                    if db_data.get("handle") == clean:
-                        target_uid = db_uid
-                        break
-            if target_uid: afk_targets.add(target_uid)
-
-    for target_id in afk_targets:
-        if target_id == uid: continue 
-        if target_id in db["users"] and db["users"][target_id].get("afk_status"):
-            reason = db["users"][target_id].get("afk_reason", "Busy")
-            name = db["users"][target_id].get("username", "User")
-            await update.message.reply_text(f"💤 <b>{name}</b> is AFK: <i>{reason}</i>", parse_mode=ParseMode.HTML)
-
-    if user_msg.startswith('/'): return
-    
-    is_reply = update.message.reply_to_message and update.message.reply_to_message.from_user.is_bot
-    is_mention = "rairin" in user_msg.lower()
-    
-    if not (is_reply or is_mention): return 
-    
-    if not GROQ_KEYS:
-        await update.message.reply_text("⚠️ No API Keys.")
-        return
-
-    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    
-    messages = [{"role": "system", "content": SYSTEM_INSTRUCTION}]
-    history = load_chat_history(uid)
-    for h in history: messages.append({"role": h['role'], "content": h['content']})
-    
-    user_handle = f"@{user.username}" if user.username else "NoHandle"
-    messages.append({"role": "user", "content": f"[User: {user_handle}]\n\n{user_msg}"})
-
-    random.shuffle(GROQ_KEYS)
-    response_text = None
-
-    for key in GROQ_KEYS:
-        try:
-            client = Groq(api_key=key)
-            completion = client.chat.completions.create(messages=messages, model="llama-3.3-70b-versatile", temperature=0.7, max_tokens=1000)
-            response_text = completion.choices[0].message.content
-            break
-        except: continue
-
-    if response_text:
-        history.append({"role": "user", "content": user_msg})
-        history.append({"role": "assistant", "content": response_text})
-        save_chat_history(uid, history[-10:])
-        try: await update.message.reply_text(response_text, parse_mode=ParseMode.MARKDOWN)
-        except BadRequest: await update.message.reply_text(response_text) 
-    else:
-        await update.message.reply_text("...")
-
-# ==========================================
-# 4. COMMANDS & UTILS (DEFINED BEFORE MAIN)
+# 3. COMMANDS HANDLERS (DEFINISI DULU)
 # ==========================================
 
 async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -412,7 +306,6 @@ async def help_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
 
-# --- AFK SYSTEM ---
 async def set_afk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reason = " ".join(context.args) if context.args else "Busy"
     user = update.effective_user
@@ -420,11 +313,7 @@ async def set_afk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = load_data()
     
     if uid not in db["users"]: 
-        db["users"][uid] = {
-            "username": user.first_name, 
-            "handle": user.username, 
-            "collection": []
-        }
+        db["users"][uid] = {"username": user.first_name, "handle": user.username, "collection": []}
         
     db["users"][uid]["afk_status"] = True
     db["users"][uid]["afk_reason"] = reason
@@ -433,72 +322,13 @@ async def set_afk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_data(db)
     await update.message.reply_text(f"💤 <b>{user.first_name}</b> AFK: <i>{reason}</i>", parse_mode=ParseMode.HTML)
 
-# --- LEADERBOARD ---
 async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = load_data()
     ranked = sorted([(d['username'], len(d.get('collection', []))) for d in db['users'].values()], key=lambda x: x[1], reverse=True)[:10]
     txt = "🏆 <b>TOP COLLECTORS</b>\n" + "\n".join([f"{i+1}. {n} ({c})" for i, (n, c) in enumerate(ranked)])
     await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
 
-# --- REPORT SYSTEM ---
-def get_reports_path():
-    if not os.path.exists('database'): os.makedirs('database')
-    return 'database/reports.json'
-
-def save_report_local(report_data):
-    file_path = get_reports_path()
-    reports = []
-    if os.path.exists(file_path):
-        try:
-            with open(file_path, 'r') as f:
-                content = f.read()
-                if content.strip(): reports = json.loads(content)
-        except: reports = []
-    reports.append(report_data)
-    with open(file_path, 'w') as f: json.dump(reports, f, indent=4)
-
-async def report_bug(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    msg_content = " ".join(context.args)
-    if not msg_content:
-        await update.message.reply_text("⚠️ Use: `/report msg`", parse_mode=ParseMode.MARKDOWN)
-        return
-    rep_id = str(uuid.uuid4())[:6]
-    data = {"id": rep_id, "date": datetime.now().strftime("%Y-%m-%d %H:%M"), "uid": user.id, "user": user.first_name, "msg": msg_content}
-    save_report_local(data)
-    await update.message.reply_text(f"✅ Report ID: `{rep_id}`", parse_mode=ParseMode.MARKDOWN)
-
-async def feedback_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.username != "kaminarich": return
-    file_path = get_reports_path()
-    if not os.path.exists(file_path):
-        await update.message.reply_text("📂 Empty.")
-        return
-    try:
-        with open(file_path, 'r') as f: reports = json.load(f)
-    except: reports = []
-    if not reports:
-        await update.message.reply_text("📂 Empty.")
-        return
-    txt = f"📋 <b>REPORTS ({len(reports)})</b>\n\n"
-    for r in reports[-5:]:
-        txt += f"🆔 <b>{r.get('id')}</b> | {r.get('date')}\n👤 {r.get('user')}\n💬 {r.get('msg')}\n{'-'*15}\n"
-    kb = [[InlineKeyboardButton("📥 JSON", callback_data="fb_down"), InlineKeyboardButton("🗑️ Clear", callback_data="fb_clear")]]
-    await update.message.reply_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
-
-async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query
-    try: await q.answer()
-    except: pass 
-    if q.from_user.username != "kaminarich": return
-    file_path = get_reports_path()
-    if q.data == "fb_clear":
-        with open(file_path, 'w') as f: json.dump([], f)
-        await q.edit_message_text("🗑️ Cleared.")
-    elif q.data == "fb_down":
-        if os.path.exists(file_path): await q.message.reply_document(document=open(file_path, 'rb'), caption="Log")
-
-# --- HUNT & GACHA ---
+# --- GACHA COMMANDS ---
 async def hunt_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keywords = " ".join(context.args)
     if not keywords:
@@ -549,7 +379,6 @@ async def get_bini(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await smart_send_photo(update, char['image'], cap, msg)
     else: await msg.edit_text("⚠️ <b>Failed.</b>", parse_mode=ParseMode.HTML)
 
-# --- COLLECTION ---
 async def my_bini_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
     db = load_data()
@@ -628,7 +457,7 @@ async def set_bini_favorite(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"⭐ <b>{found['name']}</b> set as favorite!", parse_mode=ParseMode.HTML)
         else: await update.message.reply_text("ID not found.")
 
-# --- BATTLE & SOCIAL ---
+# --- BATTLE & SOCIAL COMMANDS ---
 async def battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try: bid = int(context.args[0])
     except: 
@@ -831,6 +660,168 @@ async def swing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try: await q.edit_message_text(f"🤝 <b>TRADE SUCCESS!</b>\n\n👤 {trade['p1_name']} got <b>{trade['c2']['name']}</b>\n👤 {trade['p2_name']} got <b>{trade['c1']['name']}</b>", parse_mode=ParseMode.HTML)
     except: pass
 
+# --- REPORT & FEEDBACK ---
+def get_reports_path():
+    if not os.path.exists('database'): os.makedirs('database')
+    return 'database/reports.json'
+
+def save_report_local(report_data):
+    file_path = get_reports_path()
+    reports = []
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, 'r') as f:
+                content = f.read()
+                if content.strip(): reports = json.loads(content)
+        except: reports = []
+    reports.append(report_data)
+    with open(file_path, 'w') as f: json.dump(reports, f, indent=4)
+
+async def report_bug(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    msg_content = " ".join(context.args)
+    if not msg_content:
+        await update.message.reply_text("⚠️ Use: `/report msg`", parse_mode=ParseMode.MARKDOWN)
+        return
+    rep_id = str(uuid.uuid4())[:6]
+    data = {"id": rep_id, "date": datetime.now().strftime("%Y-%m-%d %H:%M"), "uid": user.id, "user": user.first_name, "msg": msg_content}
+    save_report_local(data)
+    await update.message.reply_text(f"✅ Report ID: `{rep_id}`", parse_mode=ParseMode.MARKDOWN)
+
+async def feedback_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.username != "kaminarich": return
+    file_path = get_reports_path()
+    if not os.path.exists(file_path):
+        await update.message.reply_text("📂 Empty.")
+        return
+    try:
+        with open(file_path, 'r') as f: reports = json.load(f)
+    except: reports = []
+    if not reports:
+        await update.message.reply_text("📂 Empty.")
+        return
+    txt = f"📋 <b>REPORTS ({len(reports)})</b>\n\n"
+    for r in reports[-5:]:
+        txt += f"🆔 <b>{r.get('id')}</b> | {r.get('date')}\n👤 {r.get('user')}\n💬 {r.get('msg')}\n{'-'*15}\n"
+    kb = [[InlineKeyboardButton("📥 JSON", callback_data="fb_down"), InlineKeyboardButton("🗑️ Clear", callback_data="fb_clear")]]
+    await update.message.reply_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+
+async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    try: await q.answer()
+    except: pass 
+    if q.from_user.username != "kaminarich": return
+    file_path = get_reports_path()
+    if q.data == "fb_clear":
+        with open(file_path, 'w') as f: json.dump([], f)
+        await q.edit_message_text("🗑️ Cleared.")
+    elif q.data == "fb_down":
+        if os.path.exists(file_path): await q.message.reply_document(document=open(file_path, 'rb'), caption="Log")
+
+# --- AI & SYSTEM ---
+async def admin_system_control(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global BOT_SLEEP_MODE
+    user = update.effective_user
+    msg = update.message.text.lower().strip()
+
+    if user.username != "kaminarich": return
+
+    if msg in ["shutdown", "terminate", "suspend"]:
+        if not BOT_SLEEP_MODE:
+            BOT_SLEEP_MODE = True
+            await update.message.reply_text("<b>System Sleeping...</b>", parse_mode=ParseMode.HTML)
+        return
+
+    if any(x in msg for x in ["activate", "wake up"]):
+        if BOT_SLEEP_MODE:
+            BOT_SLEEP_MODE = False
+            await update.message.reply_text("<b>System Online.</b>", parse_mode=ParseMode.HTML)
+        return
+
+async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if BOT_SLEEP_MODE: return
+    user_msg = update.message.text
+    if not user_msg: return
+    user = update.effective_user
+    uid = str(user.id)
+    db = load_data()
+    
+    # Save user data
+    if uid in db["users"]:
+        db["users"][uid]["handle"] = user.username 
+        db["users"][uid]["username"] = user.first_name
+        save_data(db)
+    
+    # AFK Disable Logic
+    if uid in db["users"] and db["users"][uid].get("afk_status"):
+        db["users"][uid]["afk_status"] = False
+        save_data(db)
+        await update.message.reply_text(f"👋 Welcome back <b>{user.first_name}</b>!", parse_mode=ParseMode.HTML)
+
+    # AFK Check Logic
+    afk_targets = set()
+    if update.message.reply_to_message:
+        afk_targets.add(str(update.message.reply_to_message.from_user.id))
+    
+    if update.message.entities:
+        for entity in update.message.entities:
+            target_uid = None
+            if entity.type == MessageEntity.TEXT_MENTION: target_uid = str(entity.user.id)
+            elif entity.type == MessageEntity.MENTION:
+                clean = user_msg[entity.offset:entity.offset + entity.length].replace('@', '')
+                for db_uid, db_data in db["users"].items():
+                    if db_data.get("handle") == clean:
+                        target_uid = db_uid
+                        break
+            if target_uid: afk_targets.add(target_uid)
+
+    for target_id in afk_targets:
+        if target_id == uid: continue 
+        if target_id in db["users"] and db["users"][target_id].get("afk_status"):
+            reason = db["users"][target_id].get("afk_reason", "Busy")
+            name = db["users"][target_id].get("username", "User")
+            await update.message.reply_text(f"💤 <b>{name}</b> is AFK: <i>{reason}</i>", parse_mode=ParseMode.HTML)
+
+    if user_msg.startswith('/'): return
+    
+    is_reply = update.message.reply_to_message and update.message.reply_to_message.from_user.is_bot
+    is_mention = "rairin" in user_msg.lower()
+    
+    if not (is_reply or is_mention): return 
+    
+    if not GROQ_KEYS:
+        await update.message.reply_text("⚠️ No API Keys.")
+        return
+
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    
+    messages = [{"role": "system", "content": SYSTEM_INSTRUCTION}]
+    history = load_chat_history(uid)
+    for h in history: messages.append({"role": h['role'], "content": h['content']})
+    
+    user_handle = f"@{user.username}" if user.username else "NoHandle"
+    messages.append({"role": "user", "content": f"[User: {user_handle}]\n\n{user_msg}"})
+
+    random.shuffle(GROQ_KEYS)
+    response_text = None
+
+    for key in GROQ_KEYS:
+        try:
+            client = Groq(api_key=key)
+            completion = client.chat.completions.create(messages=messages, model="llama-3.3-70b-versatile", temperature=0.7, max_tokens=1000)
+            response_text = completion.choices[0].message.content
+            break
+        except: continue
+
+    if response_text:
+        history.append({"role": "user", "content": user_msg})
+        history.append({"role": "assistant", "content": response_text})
+        save_chat_history(uid, history[-10:])
+        try: await update.message.reply_text(response_text, parse_mode=ParseMode.MARKDOWN)
+        except BadRequest: await update.message.reply_text(response_text) 
+    else:
+        await update.message.reply_text("...")
+
 async def check_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"`{update.effective_chat.id}`", parse_mode=ParseMode.MARKDOWN)
 
@@ -839,10 +830,11 @@ if __name__ == '__main__':
     
     app = ApplicationBuilder().token(TOKEN).build()
     
+    # Command Handlers
     app.add_handler(CommandHandler('start', start_bot))
     app.add_handler(CommandHandler('help', help_bot))
     app.add_handler(CommandHandler('checkid', check_id))
-    app.add_handler(CommandHandler('afk', set_afk)) # Ini sekarang aman karena set_afk sudah didefinisikan di atas
+    app.add_handler(CommandHandler('afk', set_afk))
     app.add_handler(CommandHandler('leaderboard', leaderboard))
     
     app.add_handler(CommandHandler('getbini', get_bini))
@@ -856,8 +848,17 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler('report', report_bug))
     app.add_handler(CommandHandler('feedback', feedback_list))
     
+    # Callback Handlers
     app.add_handler(CallbackQueryHandler(bini_pagination, pattern='^bini_page_'))
     app.add_handler(CallbackQueryHandler(battle_callback, pattern='^(accept_battle|sel_)'))
     app.add_handler(CallbackQueryHandler(divorce_callback, pattern='^div_'))
     app.add_handler(CallbackQueryHandler(swing_callback, pattern='^swing_'))
-    app.
+    app.add_handler(CallbackQueryHandler(feedback_callback, pattern='^fb_'))
+    
+    # Message Handlers
+    app.add_handler(MessageHandler(filters.Regex(r'^/mybini\d+$'), my_bini_detail))
+    app.add_handler(MessageHandler(filters.User(username="kaminarich") & filters.Regex(r'(?i)^(shutdown|terminate|suspend|activate|reactivate|turn on)'), admin_system_control))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_ai_chat))
+    
+    print("🟢 ALL SYSTEMS ONLINE! Waiting for updates...")
+    app.run_polling(drop_pending_updates=True)
