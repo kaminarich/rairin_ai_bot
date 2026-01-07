@@ -10,7 +10,7 @@ import urllib3
 import requests
 from io import BytesIO 
 from datetime import datetime, timedelta
-from PIL import Image # STYLE LAMA: Tetap pakai PIL untuk kestabilan
+from PIL import Image 
 
 # Telegram Imports
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity
@@ -43,21 +43,10 @@ else:
     GROQ_KEYS = []
     print("⚠️ WARNING: No Groq Keys found in .env")
 
-# HUGGING FACE CONFIG (Image Generation)
-hf_env = os.getenv("HUGGINGFACE_TOKENS")
-if hf_env:
-    HF_TOKENS = [key.strip() for key in hf_env.split(',')]
-else:
-    HF_TOKENS = []
-    print("⚠️ WARNING: No Hugging Face Tokens found in .env")
-
-# Model: Stable Diffusion XL Base 1.0 (Official & Stabil)
-HF_API_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
-
 # FILES
 DATA_FILE = 'database/database_bini.json'
 MEMORY_DIR = 'chat_memory' 
-TEMP_DIR = 'temp_downloads' # Folder Temp untuk Style Lama
+TEMP_DIR = 'temp_downloads'
 
 # GLOBAL STATE
 PENDING_BATTLES = {}
@@ -142,108 +131,165 @@ async def async_get_request(url, params=None):
     return await loop.run_in_executor(None, lambda: scraper.get(url, params=params, timeout=10))
 
 # ==========================================
-# 1. GACHA & SEARCH LOGIC (NEKOS API V4)
+# 1. GACHA & SEARCH LOGIC (NEKOS API SMART)
 # ==========================================
 
 async def fetch_master_source(specific_tags=None):
     """
-    Mengambil gambar dari Nekos API V4.
-    Endpoint: https://api.nekosapi.com/v4/images/random
+    Logika Pintar Nekos API:
+    1. Jika /hunt <query>: Cari ID Character/Tag/Artist dulu.
+    2. Grep 50-100 gambar dari ID tersebut.
+    3. Acak hasilnya.
     """
-    print(f"🔍 Scanning Nekos API... (Query: {specific_tags if specific_tags else 'Random'})")
+    base_url = "https://api.nekosapi.com/v4"
+    headers = {"User-Agent": "RairinBot/1.0"}
     
-    url = "https://api.nekosapi.com/v4/images/random"
-    
-    # Parameter dasar
-    params = {
-        "limit": 1,
-        "rating": ["safe", "suggestive", "borderline"] # Default ratings
-    }
-
-    # Jika ada tag spesifik (misal dari /hunt)
-    # Catatan: Nekos API V4 butuh Tag ID biasanya, jadi pencarian tag teks murni mungkin
-    # tidak selalu akurat di endpoint random, tapi kita coba kirim sebagai query jika memungkinkan
-    # atau biarkan random murni agar tidak error.
+    # --- LOGIKA 1: PENCARIAN SPESIFIK (/HUNT) ---
     if specific_tags:
-        # Kita coba gunakan pencarian tag jika formatnya cocok, 
-        # tapi untuk stabilitas kita utamakan random dengan rating lebih luas
-        params["rating"].append("explicit") # Izinkan NSFW jika user mencari spesifik
-
-    try:
-        # Request Sync via Executor agar tidak block bot
-        loop = asyncio.get_running_loop()
-        def do_request():
-            # Menggunakan headers User-Agent agar tidak dianggap bot spam
-            headers = {"User-Agent": "RairinBot/1.0"}
-            res = requests.get(url, params=params, headers=headers, timeout=10)
-            res.raise_for_status()
-            return res.json()
-
-        data = await loop.run_in_executor(None, do_request)
+        print(f"🔍 Searching Nekos ID for: {specific_tags}")
+        query = specific_tags.strip().lower()
         
-        # Parsing Response Nekos API V4 (Returns list of objects)
-        if isinstance(data, list) and len(data) > 0:
-            item = data[0]
+        # Helper untuk mencari ID
+        def search_id(endpoint):
+            try:
+                # Limit 5 biar cepet, kita cuma butuh yang paling cocok
+                r = requests.get(f"{base_url}/{endpoint}", params={"search": query, "limit": 5}, headers=headers, timeout=5)
+                if r.status_code == 200:
+                    res = r.json()
+                    # Cek 'results' (API v4 standard)
+                    items = res.get("results", []) if isinstance(res, dict) else res
+                    if items and len(items) > 0:
+                        return items[0]["id"]
+            except: pass
+            return None
+
+        # Jalankan pencarian ID secara parallel (Biar kenceng)
+        loop = asyncio.get_running_loop()
+        
+        # Prioritas: Character > Tag > Artist
+        # Misal user cari "Violet Evergarden", kita mau Characternya, bukan tag "violet" (warna)
+        char_task = loop.run_in_executor(None, lambda: search_id("characters"))
+        tag_task = loop.run_in_executor(None, lambda: search_id("tags"))
+        artist_task = loop.run_in_executor(None, lambda: search_id("artists"))
+        
+        char_id, tag_id, artist_id = await asyncio.gather(char_task, tag_task, artist_task)
+
+        # Siapkan parameter untuk fetch gambar
+        image_params = {
+            "limit": 50, # GREP 50 GAMBAR
+            "rating": ["safe", "suggestive", "borderline", "explicit"], # Semua rating karena spesifik search
+            "sort": "random" # Biar API juga bantu ngacak
+        }
+
+        # Tentukan filter berdasarkan hasil ID yang ketemu
+        if char_id:
+            image_params["character"] = [char_id]
+            print(f"✅ Found Character ID: {char_id}")
+        elif artist_id:
+            image_params["artist"] = [artist_id]
+            print(f"✅ Found Artist ID: {artist_id}")
+        elif tag_id:
+            image_params["tags"] = [tag_id]
+            print(f"✅ Found Tag ID: {tag_id}")
+        else:
+            print("❌ ID not found, trying fuzzy search...")
+            # Kalau ID gak ketemu sama sekali, Nekos API agak susah search string langsung di /images.
+            # Kita return None biar bot bilang "Gak nemu" daripada ngasih gambar random gak jelas.
+            return None 
+
+        # FETCH GAMBAR DENGAN ID YANG DITEMUKAN
+        try:
+            r = await loop.run_in_executor(None, lambda: requests.get(f"{base_url}/images", params=image_params, headers=headers, timeout=10))
+            if r.status_code == 200:
+                data = r.json()
+                items = data.get("results", []) if isinstance(data, dict) else data
+                
+                if items:
+                    # GREP & ACAK: Dari 50 item, pilih 1
+                    item = random.choice(items)
+                    return parse_nekos_item(item)
+        except Exception as e:
+            print(f"Error fetching specific images: {e}")
+            return None
+
+    # --- LOGIKA 2: GACHA RANDOM (/GETBINI) ---
+    else:
+        # Langsung tembak endpoint random
+        try:
+            loop = asyncio.get_running_loop()
+            def do_random():
+                # Limit 1 sudah cukup kalau random murni
+                r = requests.get(f"{base_url}/images/random", params={"limit": 1, "rating": ["safe", "suggestive"]}, headers=headers, timeout=10)
+                return r.json()
             
-            img_url = item.get("url") or item.get("file_url")
-            if not img_url: return None
-
-            # Coba ambil nama karakter dari metadata
-            char_name = "Unknown Character"
-            if "characters" in item and item["characters"]:
-                # Struktur karakter bisa object atau list, kita coba ambil nama
-                try:
-                    char_obj = item["characters"][0]
-                    if isinstance(char_obj, dict):
-                        char_name = char_obj.get("name", "Unknown")
-                    elif isinstance(char_obj, str): # Kadang cuma nama string
-                        char_name = char_obj
-                except: pass
-            
-            # Coba ambil artist
-            artist = "NekosAPI"
-            if "artist" in item and item["artist"]:
-                try:
-                    if isinstance(item["artist"], dict): artist = item["artist"].get("name", "Unknown Artist")
-                except: pass
-
-            return {
-                "image": img_url,
-                "name": char_name,
-                "source": artist,
-                "link": img_url
-            }
-
-    except Exception as e:
-        print(f"❌ Nekos API Error: {e}")
-        return None
-
+            data = await loop.run_in_executor(None, do_random)
+            # Handle kalau return list atau dict
+            if isinstance(data, list) and data:
+                return parse_nekos_item(data[0])
+            elif isinstance(data, dict) and "results" in data:
+                 if data["results"]: return parse_nekos_item(random.choice(data["results"]))
+        
+        except Exception as e:
+            print(f"Error random gacha: {e}")
+    
     return None
 
+def parse_nekos_item(item):
+    """Helper untuk merapikan data JSON dari Nekos API"""
+    img_url = item.get("url") or item.get("file_url")
+    if not img_url: return None
+
+    # Nama Karakter
+    char_name = None
+    if "characters" in item and item["characters"]:
+        try:
+            c = item["characters"][0]
+            char_name = c.get("name") if isinstance(c, dict) else str(c)
+        except: pass
+    
+    # Nama Artist
+    source_name = "NekosAPI"
+    if "artist" in item and item["artist"]:
+        try:
+            a = item["artist"]
+            source_name = a.get("name") if isinstance(a, dict) else str(a)
+        except: pass
+
+    # Fallback jika nama kosong
+    if not char_name:
+        is_original = False
+        if "tags" in item:
+            for t in item["tags"]:
+                tname = t.get("name", "").lower() if isinstance(t, dict) else str(t).lower()
+                if "original" in tname: is_original = True
+        
+        char_name = "Original Character" if is_original else "Random Waifu"
+
+    return {
+        "image": img_url,
+        "name": char_name,
+        "source": source_name,
+        "link": img_url
+    }
+
 # ==========================================
-# 2. DOWNLOAD & SEND (OLD STYLE - FILE BASED)
+# 2. DOWNLOAD & SEND (FILE BASED - OLD STYLE)
 # ==========================================
-# Metode Lama: Download -> Simpan Disk -> PIL Convert -> Kirim -> Hapus
-# "Gapapa lemot asal terkirim"
 
 def process_image_to_disk(image_url, save_path):
     try:
-        # Download stream
+        # Download
         with requests.get(image_url, stream=True, timeout=30) as r:
             r.raise_for_status()
             with open(save_path, 'wb') as f:
                 for chunk in r.iter_content(8192): f.write(chunk)
         
-        # Validasi & Konversi pake PIL
         if not os.path.exists(save_path): return False
         
+        # Convert & Resize (PIL)
         img = Image.open(save_path)
         if img.mode != 'RGB': img = img.convert('RGB')
-        
-        # Resize sedikit kalau kegedean (batas aman Telegram sekitar 2560px ke atas kadang berat)
-        img.thumbnail((2000, 2000)) 
-        
-        # Save ulang dengan kompresi JPEG
+        img.thumbnail((2000, 2000)) # Resize biar aman
         img.save(save_path, "JPEG", quality=95)
         return True
     except Exception as e:
@@ -252,8 +298,6 @@ def process_image_to_disk(image_url, save_path):
 
 async def smart_send_photo(update, image_url, caption, loading_msg=None):
     if not os.path.exists(TEMP_DIR): os.makedirs(TEMP_DIR)
-    
-    # Nama file sementara
     temp_path = os.path.join(TEMP_DIR, f"{uuid.uuid4()}.jpg")
     
     try:
@@ -262,7 +306,6 @@ async def smart_send_photo(update, image_url, caption, loading_msg=None):
             except: pass
 
         loop = asyncio.get_running_loop()
-        # Jalankan download + convert di thread terpisah (blocking I/O)
         success = await loop.run_in_executor(None, lambda: process_image_to_disk(image_url, temp_path))
 
         if not success: raise Exception("Gagal memproses gambar.")
@@ -271,12 +314,10 @@ async def smart_send_photo(update, image_url, caption, loading_msg=None):
             try: await loading_msg.delete()
             except: pass
         
-        # Kirim file dari disk
         with open(temp_path, 'rb') as f:
             try:
                 await update.message.reply_photo(photo=f, caption=caption, parse_mode=ParseMode.HTML)
             except BadRequest:
-                # Fallback: Kalau gagal kirim foto, kirim sebagai dokumen
                 f.seek(0)
                 await update.message.reply_document(document=f, caption=caption, parse_mode=ParseMode.HTML)
     except Exception as e:
@@ -285,56 +326,12 @@ async def smart_send_photo(update, image_url, caption, loading_msg=None):
             await update.message.reply_text(f"⚠️ Failed: {str(e)[:100]}\n🔗 <a href='{image_url}'>Source Link</a>", parse_mode=ParseMode.HTML)
         except: pass
     finally:
-        # Bersihkan file sampah
         if os.path.exists(temp_path):
             try: os.remove(temp_path)
             except: pass
 
 # ==========================================
-# 3. IMAGE GEN (HUGGING FACE)
-# ==========================================
-async def generate_image_hf(prompt):
-    if not HF_TOKENS:
-        raise Exception("⚠️ No Hugging Face tokens found in .env!")
-
-    token = random.choice(HF_TOKENS)
-    headers = {"Authorization": f"Bearer {token}"}
-    
-    final_prompt = f"masterpiece, best quality, {prompt}, anime style, vivid colors"
-    
-    payload = {
-        "inputs": final_prompt,
-        "parameters": {
-            "negative_prompt": "nsfw, lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry, 3d, realistic",
-            "width": 1024, 
-            "height": 1024, 
-            "guidance_scale": 7.5, 
-            "num_inference_steps": 30
-        }
-    }
-
-    loop = asyncio.get_running_loop()
-    def do_post_request():
-        response = requests.post(HF_API_URL, headers=headers, json=payload, timeout=120)
-        response.raise_for_status()
-        return response.content
-
-    try:
-        print(f"🎨 Generating with Token ending ...{token[-5:]}: {prompt}")
-        image_bytes = await loop.run_in_executor(None, do_post_request)
-        return BytesIO(image_bytes)
-    except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 503:
-             raise Exception("💤 Model sedang loading di server. Coba 1 menit lagi!")
-        elif e.response.status_code == 429:
-             raise Exception("⏳ Antrian Penuh. Tunggu sebentar...")
-        else:
-             raise e
-    except Exception as e:
-        raise e
-
-# ==========================================
-# 4. AI HANDLER (GROQ)
+# 3. AI HANDLER (GROQ)
 # ==========================================
 async def admin_system_control(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global BOT_SLEEP_MODE
@@ -447,25 +444,21 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("...")
 
 # ==========================================
-# 5. COMMANDS
+# 4. COMMANDS
 # ==========================================
 
 async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (
         "🌸 <b>Hi, I'm Rairin!</b>\n"
-        "Your assistant is here.\n\n"
-        "🔹 <code>/help</code> - Getting help\n"
-        "🔹 <code>/report</code> - to report module bugs (Nekos)\n"
-        "🔹 Reply or say myname to chat!"
+        "I'm an AI Waifu bot with Gacha features.\n\n"
+        "🔹 <code>/getbini</code> - Roll gacha (Nekos)\n"
+        "🔹 Reply to me to chat!"
     )
     await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
 
 async def help_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (
         "📚 <b>RAIRIN COMMAND LIST</b>\n\n"
-        "🎨 <b>Creative</b>\n"
-        "• <code>/imagine [prompt]</code> - Buat gambar AI (HuggingFace)\n"
-        "• <code>/draw [prompt]</code> - Alias untuk imagine\n\n"
         "🎲 <b>Gacha & Collection (Nekos API)</b>\n"
         "• <code>/getbini</code> - Roll for a new waifu (5h cd)\n"
         "• <code>/mybini</code> - View your collection\n"
@@ -482,24 +475,6 @@ async def help_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• <code>/feedback</code> - Check reports (Owner Only)\n"
     )
     await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
-
-# --- IMAGE GEN COMMAND ---
-async def draw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_prompt = " ".join(context.args)
-    if not user_prompt:
-        await update.message.reply_text("🎨 **Usage:** `/imagine <description>`\nExample: `/imagine 1girl, silver hair, cat ears`", parse_mode=ParseMode.MARKDOWN)
-        return
-
-    loading_msg = await update.message.reply_text("🎨 *Rairin sedang melukis...* (StabilityAI)", parse_mode=ParseMode.MARKDOWN)
-
-    try:
-        img_io = await generate_image_hf(user_prompt)
-        img_io.name = "generated_image.png"
-
-        await update.message.reply_photo(photo=img_io, caption=f"🎨 **Result for:** `{user_prompt}`", parse_mode=ParseMode.MARKDOWN)
-        await loading_msg.delete()
-    except Exception as e:
-        await loading_msg.edit_text(f"⚠️ **Failed:** {str(e)}", parse_mode=ParseMode.MARKDOWN)
 
 # --- REPORT SYSTEM ---
 def get_reports_path():
@@ -931,10 +906,6 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler('battle', battle))
     app.add_handler(CommandHandler('report', report_bug))
     app.add_handler(CommandHandler('feedback', feedback_list))
-    
-    # NEW HANDLER
-    app.add_handler(CommandHandler('imagine', draw_command))
-    app.add_handler(CommandHandler('draw', draw_command))
     
     app.add_handler(CallbackQueryHandler(bini_pagination, pattern='^bini_page_'))
     app.add_handler(CallbackQueryHandler(battle_callback, pattern='^(accept_battle|sel_)'))
