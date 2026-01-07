@@ -5,12 +5,17 @@ import asyncio
 import random
 import uuid
 import re
+import sys
 import cloudscraper
 import urllib3
 import requests
 from io import BytesIO 
 from datetime import datetime, timedelta
+from pathlib import Path
 from PIL import Image 
+
+# --- AUTO-INSTALL REQUIREMENTS NOTICE ---
+# Pastikan sudah: pip install python-telegram-bot python-dotenv requests cloudscraper groq Pillow
 
 # Telegram Imports
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity
@@ -18,9 +23,15 @@ from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes, Messa
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 
-# --- LOAD ENVIRONMENT VARIABLES ---
+# --- LOAD ENVIRONMENT VARIABLES (ROBUST) ---
 from dotenv import load_dotenv
-load_dotenv()
+
+# Cari file .env di folder yang sama dengan script ini
+base_dir = Path(__file__).resolve().parent
+env_file = base_dir / ".env"
+load_dotenv(env_file)
+
+print("⚙️  System Starting...")
 
 # Disable SSL Warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -30,6 +41,12 @@ from groq import Groq
 
 # --- CONFIGURATION ---
 TOKEN = os.getenv("TELEGRAM_TOKEN")
+if not TOKEN:
+    print("❌ CRITICAL ERROR: 'TELEGRAM_TOKEN' tidak ditemukan di file .env!")
+    print(f"📂 Lokasi script: {base_dir}")
+    print("👉 Pastikan file .env ada di folder yang sama.")
+    sys.exit(1)
+
 try:
     ALLOWED_GROUP_ID = int(os.getenv("ALLOWED_GROUP_ID", "0"))
 except ValueError:
@@ -39,14 +56,15 @@ except ValueError:
 groq_env = os.getenv("GROQ_KEYS_LIST")
 if groq_env:
     GROQ_KEYS = [key.strip() for key in groq_env.split(',')]
+    print(f"✅ Loaded {len(GROQ_KEYS)} Groq Keys.")
 else:
     GROQ_KEYS = []
     print("⚠️ WARNING: No Groq Keys found in .env")
 
 # FILES
-DATA_FILE = 'database/database_bini.json'
-MEMORY_DIR = 'chat_memory' 
-TEMP_DIR = 'temp_downloads'
+DATA_FILE = base_dir / 'database' / 'database_bini.json'
+MEMORY_DIR = base_dir / 'chat_memory' 
+TEMP_DIR = base_dir / 'temp_downloads'
 
 # GLOBAL STATE
 PENDING_BATTLES = {}
@@ -56,9 +74,7 @@ BOT_SLEEP_MODE = False
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
 # --- INIT SCRAPER ---
-scraper = cloudscraper.create_scraper(
-    browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True}
-)
+scraper = cloudscraper.create_scraper(browser={'browser': 'chrome', 'platform': 'windows', 'desktop': True})
 
 # --- AI PERSONA ---
 SYSTEM_INSTRUCTION = """
@@ -142,10 +158,8 @@ async def fetch_master_source(specific_tags=None):
     if specific_tags:
         query = specific_tags.strip()
         print(f"🔍 Hunting ID for: {query}")
-        
         loop = asyncio.get_running_loop()
 
-        # Helper: Cari ID
         def find_id(endpoint, search_query):
             try:
                 params = {"search": search_query, "limit": 1}
@@ -154,12 +168,11 @@ async def fetch_master_source(specific_tags=None):
                     data = r.json()
                     items = data.get("items", []) if isinstance(data, dict) else data
                     if items and len(items) > 0:
-                        item = items[0]
-                        return {"id": item["id"], "name": item["name"], "type": endpoint}
+                        return {"id": items[0]["id"], "name": items[0]["name"], "type": endpoint}
             except: pass
             return None
 
-        # Parallel Search: Characters & Tags
+        # Parallel Search
         task_char = loop.run_in_executor(None, lambda: find_id("characters", query))
         task_tag = loop.run_in_executor(None, lambda: find_id("tags", query))
         
@@ -168,28 +181,18 @@ async def fetch_master_source(specific_tags=None):
 
         if match:
             print(f"✅ Match Found: {match['name']} ({match['type']})")
+            img_params = {"limit": 50, "rating": ["safe", "suggestive", "borderline", "explicit"], "sort": "random"}
             
-            # Ambil 50 gambar dari ID tersebut
-            img_params = {
-                "limit": 50,
-                "rating": ["safe", "suggestive", "borderline", "explicit"],
-                "sort": "random"
-            }
-
-            if match['type'] == 'characters':
-                img_params['character'] = [match['id']]
-            elif match['type'] == 'tags':
-                img_params['tags'] = [match['id']]
+            if match['type'] == 'characters': img_params['character'] = [match['id']]
+            elif match['type'] == 'tags': img_params['tags'] = [match['id']]
 
             try:
                 r = await loop.run_in_executor(None, lambda: requests.get(f"{base_url}/images", params=img_params, headers=headers, timeout=10))
                 if r.status_code == 200:
                     data = r.json()
                     items = data.get("items", []) if isinstance(data, dict) else data
-                    if items:
-                        return parse_nekos_item(random.choice(items))
-            except Exception as e:
-                print(f"Error fetch ID: {e}")
+                    if items: return parse_nekos_item(random.choice(items))
+            except Exception as e: print(f"Error fetch ID: {e}")
         else:
             return None
 
@@ -198,19 +201,12 @@ async def fetch_master_source(specific_tags=None):
         try:
             loop = asyncio.get_running_loop()
             def do_random():
-                return requests.get(
-                    f"{base_url}/images/random", 
-                    params={"limit": 1, "rating": ["safe", "suggestive"]}, 
-                    headers=headers, 
-                    timeout=10
-                ).json()
+                return requests.get(f"{base_url}/images/random", params={"limit": 1, "rating": ["safe", "suggestive"]}, headers=headers, timeout=10).json()
             
             data = await loop.run_in_executor(None, do_random)
             items = data.get("items", []) if isinstance(data, dict) else data
-            if items:
-                return parse_nekos_item(items[0])
-        except Exception as e:
-            print(f"Error random: {e}")
+            if items: return parse_nekos_item(items[0])
+        except Exception as e: print(f"Error random: {e}")
     
     return None
 
@@ -220,16 +216,12 @@ def parse_nekos_item(item):
 
     char_name = None
     if "characters" in item and item["characters"]:
-        try:
-            c = item["characters"][0]
-            char_name = c.get("name") if isinstance(c, dict) else str(c)
+        try: char_name = item["characters"][0].get("name") if isinstance(item["characters"][0], dict) else str(item["characters"][0])
         except: pass
     
     source_name = "NekosAPI"
     if "artist" in item and item["artist"]:
-        try:
-            a = item["artist"]
-            source_name = a.get("name") if isinstance(a, dict) else str(a)
+        try: source_name = item["artist"].get("name") if isinstance(item["artist"], dict) else str(item["artist"])
         except: pass
 
     if not char_name:
@@ -240,12 +232,7 @@ def parse_nekos_item(item):
                 if "original" in tname: is_original = True
         char_name = "Original Character" if is_original else "Random Waifu"
 
-    return {
-        "image": img_url,
-        "name": char_name,
-        "source": source_name,
-        "link": img_url
-    }
+    return {"image": img_url, "name": char_name, "source": source_name, "link": img_url}
 
 # ==========================================
 # 2. DOWNLOAD & SEND
@@ -288,8 +275,7 @@ async def smart_send_photo(update, image_url, caption, loading_msg=None):
             except: pass
         
         with open(temp_path, 'rb') as f:
-            try:
-                await update.message.reply_photo(photo=f, caption=caption, parse_mode=ParseMode.HTML)
+            try: await update.message.reply_photo(photo=f, caption=caption, parse_mode=ParseMode.HTML)
             except BadRequest:
                 f.seek(0)
                 await update.message.reply_document(document=f, caption=caption, parse_mode=ParseMode.HTML)
@@ -333,30 +319,31 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(user.id)
     db = load_data()
     
+    # Save user data
     if uid in db["users"]:
         db["users"][uid]["handle"] = user.username 
         db["users"][uid]["username"] = user.first_name
         save_data(db)
     
-    # AFK Logic
+    # AFK Disable Logic
     if uid in db["users"] and db["users"][uid].get("afk_status"):
         db["users"][uid]["afk_status"] = False
         save_data(db)
         await update.message.reply_text(f"👋 Welcome back <b>{user.first_name}</b>!", parse_mode=ParseMode.HTML)
 
+    # AFK Check Logic
     afk_targets = set()
     if update.message.reply_to_message:
-        target_id = str(update.message.reply_to_message.from_user.id)
-        afk_targets.add(target_id)
+        afk_targets.add(str(update.message.reply_to_message.from_user.id))
     
     if update.message.entities:
         for entity in update.message.entities:
             target_uid = None
             if entity.type == MessageEntity.TEXT_MENTION: target_uid = str(entity.user.id)
             elif entity.type == MessageEntity.MENTION:
-                clean_mention = user_msg[entity.offset:entity.offset + entity.length].replace('@', '')
+                clean = user_msg[entity.offset:entity.offset + entity.length].replace('@', '')
                 for db_uid, db_data in db["users"].items():
-                    if db_data.get("handle") == clean_mention:
+                    if db_data.get("handle") == clean:
                         target_uid = db_uid
                         break
             if target_uid: afk_targets.add(target_uid)
@@ -394,9 +381,7 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for key in GROQ_KEYS:
         try:
             client = Groq(api_key=key)
-            completion = client.chat.completions.create(
-                messages=messages, model="llama-3.3-70b-versatile", temperature=0.7, max_tokens=1000
-            )
+            completion = client.chat.completions.create(messages=messages, model="llama-3.3-70b-versatile", temperature=0.7, max_tokens=1000)
             response_text = completion.choices[0].message.content
             break
         except: continue
@@ -823,41 +808,12 @@ async def swing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try: await q.edit_message_text(f"🤝 <b>TRADE SUCCESS!</b>\n\n👤 {trade['p1_name']} got <b>{trade['c2']['name']}</b>\n👤 {trade['p2_name']} got <b>{trade['c1']['name']}</b>", parse_mode=ParseMode.HTML)
     except: pass
 
-# --- SYSTEM UTILS ---
-async def set_afk(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    reason = " ".join(context.args) if context.args else "Busy"
-    user = update.effective_user
-    uid = str(user.id)
-    db = load_data()
-    
-    if uid not in db["users"]: 
-        db["users"][uid] = {
-            "username": user.first_name, 
-            "handle": user.username, 
-            "collection": []
-        }
-        
-    db["users"][uid]["afk_status"] = True
-    db["users"][uid]["afk_reason"] = reason
-    db["users"][uid]["username"] = user.first_name
-    db["users"][uid]["handle"] = user.username 
-    save_data(db)
-    await update.message.reply_text(f"💤 <b>{user.first_name}</b> AFK: <i>{reason}</i>", parse_mode=ParseMode.HTML)
-
-async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    db = load_data()
-    ranked = sorted([(d['username'], len(d.get('collection', []))) for d in db['users'].values()], key=lambda x: x[1], reverse=True)[:10]
-    txt = "🏆 <b>TOP COLLECTORS</b>\n" + "\n".join([f"{i+1}. {n} ({c})" for i, (n, c) in enumerate(ranked)])
-    await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
-
 async def check_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"`{update.effective_chat.id}`", parse_mode=ParseMode.MARKDOWN)
 
 if __name__ == '__main__':
-    if not TOKEN:
-        print("❌ ERROR: TELEGRAM_TOKEN not found in .env")
-        exit()
-
+    print("🚀 Building Bot Application...")
+    
     app = ApplicationBuilder().token(TOKEN).build()
     
     app.add_handler(CommandHandler('start', start_bot))
@@ -865,3 +821,27 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler('checkid', check_id))
     app.add_handler(CommandHandler('afk', set_afk))
     app.add_handler(CommandHandler('leaderboard', leaderboard))
+    
+    app.add_handler(CommandHandler('getbini', get_bini))
+    app.add_handler(CommandHandler('mybini', my_bini_list))
+    app.add_handler(CommandHandler('bini', set_bini_favorite))
+    
+    app.add_handler(CommandHandler('hunt', hunt_images))
+    app.add_handler(CommandHandler('divorce', divorce_waifu))
+    app.add_handler(CommandHandler('swing', swing_waifu))
+    app.add_handler(CommandHandler('battle', battle))
+    app.add_handler(CommandHandler('report', report_bug))
+    app.add_handler(CommandHandler('feedback', feedback_list))
+    
+    app.add_handler(CallbackQueryHandler(bini_pagination, pattern='^bini_page_'))
+    app.add_handler(CallbackQueryHandler(battle_callback, pattern='^(accept_battle|sel_)'))
+    app.add_handler(CallbackQueryHandler(divorce_callback, pattern='^div_'))
+    app.add_handler(CallbackQueryHandler(swing_callback, pattern='^swing_'))
+    app.add_handler(CallbackQueryHandler(feedback_callback, pattern='^fb_'))
+    
+    app.add_handler(MessageHandler(filters.Regex(r'^/mybini\d+$'), my_bini_detail))
+    app.add_handler(MessageHandler(filters.User(username="kaminarich") & filters.Regex(r'(?i)^(shutdown|terminate|suspend|activate|reactivate|turn on)'), admin_system_control))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_ai_chat))
+    
+    print("🟢 ALL SYSTEMS ONLINE! Waiting for updates...")
+    app.run_polling(drop_pending_updates=True)
