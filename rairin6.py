@@ -142,17 +142,23 @@ async def async_get_request(url, params=None):
     return await loop.run_in_executor(None, lambda: scraper.get(url, params=params, timeout=10))
 
 # ==========================================
-# 1. GACHA & SEARCH LOGIC (NEKOS V4)
+# 1. GACHA & SEARCH LOGIC (FIXED NEKOS V4)
 # ==========================================
 
 async def fetch_master_source(specific_tags=None):
+    """
+    Logika:
+    1. Cek ID -> Fetch ID.
+    2. Cek Metadata -> Fetch by ID.
+    3. Fallback -> Fetch by Tag String (Full Rating).
+    """
     base_url = "https://api.nekosapi.com/v4"
     headers = {"User-Agent": "RairinBot/1.0"}
     NSFW_RATINGS = ["safe", "suggestive", "borderline", "explicit"] 
 
     loop = asyncio.get_running_loop()
 
-    # --- A. JIKA INPUT ADALAH ID (ANGKA) ---
+    # --- A. INPUT ID (ANGKA) ---
     if specific_tags and specific_tags.strip().isdigit():
         img_id = specific_tags.strip()
         print(f"🔍 Fetching by Image ID: {img_id}")
@@ -166,7 +172,7 @@ async def fetch_master_source(specific_tags=None):
         except:
             return {"status": "error", "msg": "Connection error."}
 
-    # --- B. JIKA INPUT ADALAH TEKS (/HUNT) ---
+    # --- B. INPUT TEKS (/HUNT) ---
     elif specific_tags:
         query = specific_tags.strip()
         print(f"🔍 Validating Tag/Char: '{query}'")
@@ -264,17 +270,14 @@ def parse_nekos_item(item, status="Success"):
     # --- LOGIC NAMA TAG JIKA KARAKTER TIDAK DIKETAHUI ---
     if char_name == "Unknown":
         tags_list = item.get("tags", [])
-        # Tags biasanya list of objects di endpoint images
         if tags_list and isinstance(tags_list, list):
-            # Ambil tag pertama yang ada
+            # Ambil tag pertama
             first_tag = tags_list[0]
             if isinstance(first_tag, dict):
-                # Format: "Cat Girl" bukan "cat_girl"
                 char_name = first_tag.get("name", "").replace("_", " ").title()
             elif isinstance(first_tag, str):
                 char_name = first_tag.replace("_", " ").title()
         
-        # Jika masih kosong juga
         if char_name == "Unknown" or char_name == "":
             char_name = "Random Waifu"
 
@@ -447,7 +450,7 @@ async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif q.data == "fb_down":
         if os.path.exists(file_path): await q.message.reply_document(document=open(file_path, 'rb'), caption="Log")
 
-# --- TAGS COMMANDS (NEW) ---
+# --- TAGS COMMANDS (NEW & DEBUGGED) ---
 async def list_tags_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_tags_page(update, 0)
 
@@ -458,14 +461,31 @@ async def show_tags_page(update, offset):
         headers = {"User-Agent": "RairinBot/1.0"}
         
         loop = asyncio.get_running_loop()
-        r = await loop.run_in_executor(None, lambda: requests.get(url, params=params, headers=headers, timeout=10))
-        data = r.json()
-        items = data.get("items", []) if isinstance(data, dict) else data
+        
+        # Tambahkan print debug di console
+        print(f"📥 Fetching tags: offset={offset}")
+        
+        def fetch_tags():
+            r = requests.get(url, params=params, headers=headers, timeout=10)
+            r.raise_for_status() # Cek apakah ada error HTTP (404/500)
+            return r.json()
+
+        data = await loop.run_in_executor(None, fetch_tags)
+        
+        # Log response structure
+        # print(f"Raw Tags Response: {str(data)[:200]}...") # Uncomment for deep debug
+
+        # Parse items (Handle 'items' list or direct list)
+        items = []
+        if isinstance(data, dict):
+            items = data.get("items", [])
+        elif isinstance(data, list):
+            items = data
         
         if not items:
             text = "⚠️ No tags found or end of list."
             if update.callback_query:
-                await update.callback_query.answer(text)
+                await update.callback_query.edit_message_text(text)
             else:
                 await update.message.reply_text(text)
             return
@@ -474,7 +494,7 @@ async def show_tags_page(update, offset):
         for item in items:
             name = item.get('name', 'Unknown')
             desc = item.get('description', 'No description')
-            if desc and len(desc) > 30: desc = desc[:30] + "..."
+            if desc and len(desc) > 40: desc = desc[:40] + "..."
             msg_txt += f"• <code>{name}</code> - {desc}\n"
         
         msg_txt += "\n<i>Use /hunt [tag_name] to search.</i>"
@@ -484,7 +504,7 @@ async def show_tags_page(update, offset):
         if offset >= 10:
             btns.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"tags_page_{offset - 10}"))
         
-        # Check if there might be more (simple heuristic, if full page returned)
+        # Simple pagination check
         if len(items) == 10:
             btns.append(InlineKeyboardButton("Next ➡️", callback_data=f"tags_page_{offset + 10}"))
             
@@ -496,8 +516,9 @@ async def show_tags_page(update, offset):
             await update.message.reply_text(msg_txt, reply_markup=kb, parse_mode=ParseMode.HTML)
 
     except Exception as e:
-        print(f"Tags Error: {e}")
-        err_text = "❌ Failed to fetch tags."
+        print(f"❌ Tags Error: {e}")
+        # Kirim error spesifik ke user biar tahu salahnya dimana
+        err_text = f"❌ Failed to fetch tags: {str(e)[:100]}"
         if update.callback_query:
             await update.callback_query.edit_message_text(err_text)
         else:
@@ -510,8 +531,10 @@ async def tags_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     data = q.data
     if data.startswith("tags_page_"):
-        offset = int(data.split("_")[2])
-        await show_tags_page(update, offset)
+        try:
+            offset = int(data.split("_")[2])
+            await show_tags_page(update, offset)
+        except: pass
 
 # --- GACHA HANDLERS ---
 async def hunt_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
