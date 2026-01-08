@@ -23,7 +23,6 @@ from telegram.error import BadRequest
 # --- LOAD ENVIRONMENT VARIABLES ---
 from dotenv import load_dotenv
 
-# Path Absolute
 base_dir = Path(__file__).resolve().parent
 env_file = base_dir / ".env"
 load_dotenv(env_file)
@@ -142,7 +141,7 @@ async def async_get_request(url, params=None):
     return await loop.run_in_executor(None, lambda: scraper.get(url, params=params, timeout=10))
 
 # ==========================================
-# 1. GACHA & SEARCH LOGIC (FIXED NEKOS V4)
+# 1. GACHA & SEARCH LOGIC
 # ==========================================
 
 async def fetch_master_source(specific_tags=None):
@@ -183,7 +182,7 @@ async def fetch_master_source(specific_tags=None):
 
         # Cek Characters, Categories (Tags), Artists
         t_char = loop.run_in_executor(None, lambda: search_meta("characters", query))
-        t_cat = loop.run_in_executor(None, lambda: search_meta("categories", query)) # Coba Categories
+        t_cat = loop.run_in_executor(None, lambda: search_meta("categories", query))
         t_art = loop.run_in_executor(None, lambda: search_meta("artists", query))
         
         res = await asyncio.gather(t_char, t_cat, t_art)
@@ -194,7 +193,7 @@ async def fetch_master_source(specific_tags=None):
             img_params = {"limit": 20, "rating": NSFW_RATINGS, "sort": "random"}
             
             if match['type'] == 'characters': img_params['character'] = [match['id']]
-            elif match['type'] == 'categories': img_params['categories'] = [match['id']] # Note: Parameter might be 'categories' or 'tags' depending on endpoint
+            elif match['type'] == 'categories': img_params['categories'] = [match['id']]
             elif match['type'] == 'artists': img_params['artist'] = [match['id']]
 
             try:
@@ -366,10 +365,9 @@ async def smart_send_photo(update, image_url, caption, loading_msg=None):
 # ==========================================
 
 async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # UPDATED: Perkenalan AI Assistant & Info Help
     txt = (
         "👋 <b>Hello! I'm Rairin.</b>\n"
-        "I am an AI Assistant created to help you.\n\n"
+        "I am your personal AI Assistant.\n\n"
         "🤖 <b>What can I do?</b>\n"
         "• Chat with me anytime!\n"
         "• Use <code>/getbini</code> for random anime art.\n"
@@ -382,7 +380,7 @@ async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (
-        "📚 <b>COMMAND LIST</b>\n"
+        "📚 <b>COMMANDS</b>\n"
         "• /getbini - Random Waifu\n"
         "• /mybini - Collection\n"
         "• /hunt [name] - Cari Character/Tag\n"
@@ -469,19 +467,18 @@ async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif q.data == "fb_down":
         if os.path.exists(file_path): await q.message.reply_document(document=open(file_path, 'rb'), caption="Log")
 
-# --- TAGS COMMANDS (UPDATED: /categories) ---
+# --- TAGS COMMANDS ---
 async def list_tags_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_tags_page(update, 0)
 
 async def show_tags_page(update, offset):
     try:
-        # PENTING: Gunakan /categories alih-alih /tags karena /tags 404
         url = "https://api.nekosapi.com/v4/categories"
         params = {"limit": 10, "offset": offset}
         headers = {"User-Agent": "RairinBot/1.0"}
         
         loop = asyncio.get_running_loop()
-        print(f"📥 Fetching Categories (Tags): offset={offset}")
+        print(f"📥 Fetching Categories: offset={offset}")
         
         def fetch_cats():
             r = requests.get(url, params=params, headers=headers, timeout=10)
@@ -489,10 +486,7 @@ async def show_tags_page(update, offset):
             return r.json()
 
         data = await loop.run_in_executor(None, fetch_cats)
-        
-        items = []
-        if isinstance(data, dict): items = data.get("items", [])
-        elif isinstance(data, list): items = data
+        items = data.get("items", []) if isinstance(data, dict) else data
         
         if not items:
             text = "⚠️ End of list."
@@ -500,10 +494,9 @@ async def show_tags_page(update, offset):
             else: await update.message.reply_text(text)
             return
 
-        msg_txt = f"🏷️ <b>AVAILABLE TAGS/CATS (Page {offset // 10 + 1})</b>\n\n"
+        msg_txt = f"🏷️ <b>AVAILABLE TAGS (Page {offset // 10 + 1})</b>\n\n"
         for item in items:
             name = item.get('name', 'Unknown')
-            # desc = item.get('description', 'No description') # API V4 categories maybe no desc
             msg_txt += f"• <code>{name}</code>\n"
         
         msg_txt += "\n<i>Use /hunt [name] to search.</i>"
@@ -894,12 +887,112 @@ async def swing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def check_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"`{update.effective_chat.id}`", parse_mode=ParseMode.MARKDOWN)
 
+# --- AI & SYSTEM ---
+async def admin_system_control(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global BOT_SLEEP_MODE
+    user = update.effective_user
+    msg = update.message.text.lower().strip()
+
+    if user.username != "kaminarich": return
+
+    if msg in ["shutdown", "terminate", "suspend"]:
+        if not BOT_SLEEP_MODE:
+            BOT_SLEEP_MODE = True
+            await update.message.reply_text("<b>System Sleeping...</b>", parse_mode=ParseMode.HTML)
+        return
+
+    if any(x in msg for x in ["activate", "wake up"]):
+        if BOT_SLEEP_MODE:
+            BOT_SLEEP_MODE = False
+            await update.message.reply_text("<b>System Online.</b>", parse_mode=ParseMode.HTML)
+        return
+
+async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if BOT_SLEEP_MODE: return
+    user_msg = update.message.text
+    if not user_msg: return
+    user = update.effective_user
+    uid = str(user.id)
+    db = load_data()
+    
+    if uid in db["users"]:
+        db["users"][uid]["handle"] = user.username 
+        db["users"][uid]["username"] = user.first_name
+        save_data(db)
+    
+    if uid in db["users"] and db["users"][uid].get("afk_status"):
+        db["users"][uid]["afk_status"] = False
+        save_data(db)
+        await update.message.reply_text(f"👋 Welcome back <b>{user.first_name}</b>!", parse_mode=ParseMode.HTML)
+
+    afk_targets = set()
+    if update.message.reply_to_message:
+        afk_targets.add(str(update.message.reply_to_message.from_user.id))
+    
+    if update.message.entities:
+        for entity in update.message.entities:
+            target_uid = None
+            if entity.type == MessageEntity.TEXT_MENTION: target_uid = str(entity.user.id)
+            elif entity.type == MessageEntity.MENTION:
+                clean = user_msg[entity.offset:entity.offset + entity.length].replace('@', '')
+                for db_uid, db_data in db["users"].items():
+                    if db_data.get("handle") == clean:
+                        target_uid = db_uid
+                        break
+            if target_uid: afk_targets.add(target_uid)
+
+    for target_id in afk_targets:
+        if target_id == uid: continue 
+        if target_id in db["users"] and db["users"][target_id].get("afk_status"):
+            reason = db["users"][target_id].get("afk_reason", "Busy")
+            name = db["users"][target_id].get("username", "User")
+            await update.message.reply_text(f"💤 <b>{name}</b> is AFK: <i>{reason}</i>", parse_mode=ParseMode.HTML)
+
+    if user_msg.startswith('/'): return
+    
+    is_reply = update.message.reply_to_message and update.message.reply_to_message.from_user.is_bot
+    is_mention = "rairin" in user_msg.lower()
+    
+    if not (is_reply or is_mention): return 
+    
+    if not GROQ_KEYS:
+        await update.message.reply_text("⚠️ No API Keys.")
+        return
+
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    
+    messages = [{"role": "system", "content": SYSTEM_INSTRUCTION}]
+    history = load_chat_history(uid)
+    for h in history: messages.append({"role": h['role'], "content": h['content']})
+    
+    user_handle = f"@{user.username}" if user.username else "NoHandle"
+    messages.append({"role": "user", "content": f"[User: {user_handle}]\n\n{user_msg}"})
+
+    random.shuffle(GROQ_KEYS)
+    response_text = None
+
+    for key in GROQ_KEYS:
+        try:
+            client = Groq(api_key=key)
+            completion = client.chat.completions.create(messages=messages, model="llama-3.3-70b-versatile", temperature=0.7, max_tokens=1000)
+            response_text = completion.choices[0].message.content
+            break
+        except: continue
+
+    if response_text:
+        history.append({"role": "user", "content": user_msg})
+        history.append({"role": "assistant", "content": response_text})
+        save_chat_history(uid, history[-10:])
+        try: await update.message.reply_text(response_text, parse_mode=ParseMode.MARKDOWN)
+        except BadRequest: await update.message.reply_text(response_text) 
+    else:
+        await update.message.reply_text("...")
+
 if __name__ == '__main__':
     print("🚀 Building Bot Application...")
     
     app = ApplicationBuilder().token(TOKEN).build()
     
-    # Command Handlers
     app.add_handler(CommandHandler('start', start_bot))
     app.add_handler(CommandHandler('help', help_bot))
     app.add_handler(CommandHandler('checkid', check_id))
@@ -917,10 +1010,8 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler('report', report_bug))
     app.add_handler(CommandHandler('feedback', feedback_list))
     
-    # NEW: Tags Command
     app.add_handler(CommandHandler('tags', list_tags_command))
     
-    # Callback Handlers
     app.add_handler(CallbackQueryHandler(bini_pagination, pattern='^bini_page_'))
     app.add_handler(CallbackQueryHandler(battle_callback, pattern='^(accept_battle|sel_)'))
     app.add_handler(CallbackQueryHandler(divorce_callback, pattern='^div_'))
@@ -928,7 +1019,6 @@ if __name__ == '__main__':
     app.add_handler(CallbackQueryHandler(feedback_callback, pattern='^fb_'))
     app.add_handler(CallbackQueryHandler(tags_callback, pattern='^tags_page_'))
     
-    # Message Handlers
     app.add_handler(MessageHandler(filters.Regex(r'^/mybini\d+$'), my_bini_detail))
     app.add_handler(MessageHandler(filters.User(username="kaminarich") & filters.Regex(r'(?i)^(shutdown|terminate|suspend|activate|reactivate|turn on)'), admin_system_control))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_ai_chat))
