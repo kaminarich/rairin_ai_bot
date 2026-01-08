@@ -142,25 +142,13 @@ async def async_get_request(url, params=None):
     return await loop.run_in_executor(None, lambda: scraper.get(url, params=params, timeout=10))
 
 # ==========================================
-# 1. GACHA & SEARCH LOGIC (FULL NSFW ENABLED)
+# 1. GACHA & SEARCH LOGIC (FIXED NEKOS V4)
 # ==========================================
 
 async def fetch_master_source(specific_tags=None):
-    """
-    Logika:
-    1. Cek input angka? -> Fetch by ID.
-    2. Cek Metadata (Tag/Character) di API.
-    3. Jika ketemu ID -> Ambil gambar specific.
-    4. Jika TIDAK ketemu ID -> Ambil Random.
-    
-    UPDATE: NSFW (Explicit) ENABLED!
-    """
     base_url = "https://api.nekosapi.com/v4"
     headers = {"User-Agent": "RairinBot/1.0"}
-    
-    # --- RATING FULL (MASUKKAN EXPLICIT) ---
-    # Ini kuncinya: kita masukkan 'explicit' agar hasil pencarian NSFW muncul
-    NSFW_RATINGS = ["safe", "suggestive", "borderline", "explicit"]
+    NSFW_RATINGS = ["safe", "suggestive", "borderline", "explicit"] # FULL RATING
 
     loop = asyncio.get_running_loop()
 
@@ -181,12 +169,12 @@ async def fetch_master_source(specific_tags=None):
     # --- B. JIKA INPUT ADALAH TEKS (/HUNT) ---
     elif specific_tags:
         query = specific_tags.strip()
-        print(f"🔍 Validating Tag/Char (NSFW ON): '{query}'")
+        print(f"🔍 Validating Tag/Char: '{query}'")
 
         # Fungsi cari ID Character/Tag
         def search_meta(endpoint, q):
             try:
-                # Cari yang paling mirip
+                # Cari yang paling mirip (fuzzy search dari API)
                 params = {"search": q, "limit": 1} 
                 r = requests.get(f"{base_url}/{endpoint}", params=params, headers=headers, timeout=5)
                 data = r.json()
@@ -200,7 +188,7 @@ async def fetch_master_source(specific_tags=None):
         t_tag = loop.run_in_executor(None, lambda: search_meta("tags", query))
         
         res = await asyncio.gather(t_char, t_tag)
-        match = res[0] or res[1] 
+        match = res[0] or res[1] # Prioritas Character, lalu Tag
 
         if match:
             # === TAG/CHAR KETEMU ===
@@ -208,7 +196,7 @@ async def fetch_master_source(specific_tags=None):
             
             img_params = {
                 "limit": 20, 
-                "rating": NSFW_RATINGS, # PAKE RATING FULL
+                "rating": NSFW_RATINGS, # Rating FULL
                 "sort": "random"
             }
             if match['type'] == 'characters': img_params['character'] = [match['id']]
@@ -228,24 +216,21 @@ async def fetch_master_source(specific_tags=None):
         
         else:
             # === TAG TIDAK KETEMU ===
-            print(f"❌ Tag '{query}' not found. Using Random Fallback.")
-            # Tetap return random, tapi kasih notif kalau tag aslinya ga ada
-            return await fetch_random_fallback(f"Tag '{query}' not found. Here is a random image.")
+            print(f"❌ Tag '{query}' not found in API.")
+            return await fetch_random_fallback(f"Tag '{query}' not found.")
 
     # --- C. RANDOM MURNI (/GETBINI) ---
     else:
-        # Gacha biasa juga kita kasih full range rating biar seru
-        return await fetch_random_fallback(None) 
+        return await fetch_random_fallback(None) # None msg artinya normal gacha
 
 async def fetch_random_fallback(fail_message):
-    """Mengambil gambar random dengan rating FULL"""
+    """Mengambil gambar random murni dan menyisipkan pesan error jika ada"""
     base_url = "https://api.nekosapi.com/v4"
     headers = {"User-Agent": "RairinBot/1.0"}
     loop = asyncio.get_running_loop()
     
     try:
         def do_rnd():
-            # Include EXPLICIT here too
             params = {"limit": 1, "rating": ["safe", "suggestive", "borderline", "explicit"]}
             return requests.get(f"{base_url}/images/random", params=params, headers=headers, timeout=10).json()
         
@@ -270,16 +255,14 @@ def parse_nekos_item(item, status="Success"):
 
     img_id = item.get("id", "Unknown")
 
-    # Parsing Karakter
     char_name = "Unknown"
     if "characters" in item and item["characters"]:
         try:
             c = item["characters"][0]
             if isinstance(c, dict): char_name = c.get("name", "Unknown")
-            elif isinstance(c, int): char_name = f"Character ID: {c}"
+            elif isinstance(c, int): char_name = f"Character ID: {c}" 
         except: pass
     
-    # Parsing Artist
     artist_name = "NekosAPI"
     if "artist" in item and item["artist"]:
         try:
@@ -287,14 +270,11 @@ def parse_nekos_item(item, status="Success"):
             if isinstance(a, dict): artist_name = a.get("name", "NekosAPI")
         except: pass
 
-    # Fallback Name
     if char_name == "Unknown":
         char_name = "Random Waifu"
-        # Cek tag original
         tags = item.get("tags", [])
         if isinstance(tags, list):
             for t in tags:
-                # tag bisa int(id) atau dict
                 if isinstance(t, dict) and "original" in t.get("name", "").lower():
                     char_name = "Original Character"
                     break
@@ -365,7 +345,7 @@ async def smart_send_photo(update, image_url, caption, loading_msg=None):
             except: pass
 
 # ==========================================
-# 3. COMMANDS
+# 3. COMMAND HANDLERS
 # ==========================================
 
 async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -408,7 +388,59 @@ async def leaderboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = "🏆 <b>TOP COLLECTORS</b>\n" + "\n".join([f"{i+1}. {n} ({c})" for i, (n, c) in enumerate(ranked)])
     await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
 
-# --- GACHA COMMANDS ---
+async def report_bug(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    msg_content = " ".join(context.args)
+    if not msg_content:
+        await update.message.reply_text("⚠️ Use: `/report msg`", parse_mode=ParseMode.MARKDOWN)
+        return
+    rep_id = str(uuid.uuid4())[:6]
+    # Path untuk report local
+    if not os.path.exists('database'): os.makedirs('database')
+    file_path = 'database/reports.json'
+    reports = []
+    if os.path.exists(file_path):
+        try:
+            with open(file_path, 'r') as f: reports = json.load(f)
+        except: pass
+    
+    data = {"id": rep_id, "date": datetime.now().strftime("%Y-%m-%d %H:%M"), "uid": user.id, "user": user.first_name, "msg": msg_content}
+    reports.append(data)
+    with open(file_path, 'w') as f: json.dump(reports, f, indent=4)
+    
+    await update.message.reply_text(f"✅ Report ID: `{rep_id}`", parse_mode=ParseMode.MARKDOWN)
+
+async def feedback_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.username != "kaminarich": return
+    file_path = 'database/reports.json'
+    if not os.path.exists(file_path):
+        await update.message.reply_text("📂 Empty.")
+        return
+    try:
+        with open(file_path, 'r') as f: reports = json.load(f)
+    except: reports = []
+    if not reports:
+        await update.message.reply_text("📂 Empty.")
+        return
+    txt = f"📋 <b>REPORTS ({len(reports)})</b>\n\n"
+    for r in reports[-5:]:
+        txt += f"🆔 <b>{r.get('id')}</b> | {r.get('date')}\n👤 {r.get('user')}\n💬 {r.get('msg')}\n{'-'*15}\n"
+    kb = [[InlineKeyboardButton("📥 JSON", callback_data="fb_down"), InlineKeyboardButton("🗑️ Clear", callback_data="fb_clear")]]
+    await update.message.reply_text(txt, reply_markup=InlineKeyboardMarkup(kb), parse_mode=ParseMode.HTML)
+
+async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    try: await q.answer()
+    except: pass 
+    if q.from_user.username != "kaminarich": return
+    file_path = 'database/reports.json'
+    if q.data == "fb_clear":
+        with open(file_path, 'w') as f: json.dump([], f)
+        await q.edit_message_text("🗑️ Cleared.")
+    elif q.data == "fb_down":
+        if os.path.exists(file_path): await q.message.reply_document(document=open(file_path, 'rb'), caption="Log")
+
+# --- GACHA HANDLERS ---
 async def hunt_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keywords = " ".join(context.args)
     if not keywords:
@@ -419,7 +451,7 @@ async def hunt_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
     result = await fetch_master_source(specific_tags=keywords)
     
     if result:
-        # Handle Error Logic
+        # Handle Error
         if result.get("status") == "error":
             await msg.edit_text(f"❌ {result['msg']}")
             return
@@ -480,6 +512,7 @@ async def get_bini(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await smart_send_photo(update, char['image'], cap, msg)
     else: await msg.edit_text("⚠️ <b>Failed to summon.</b>", parse_mode=ParseMode.HTML)
 
+# --- MY BINI, BATTLE, TRADE, ETC ---
 async def my_bini_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
     db = load_data()
@@ -558,7 +591,6 @@ async def set_bini_favorite(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"⭐ <b>{found['name']}</b> set as favorite!", parse_mode=ParseMode.HTML)
         else: await update.message.reply_text("ID not found.")
 
-# --- BATTLE & SOCIAL ---
 async def battle(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try: bid = int(context.args[0])
     except: 
@@ -760,6 +792,110 @@ async def swing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     del PENDING_TRADES[trade_id]
     try: await q.edit_message_text(f"🤝 <b>TRADE SUCCESS!</b>\n\n👤 {trade['p1_name']} got <b>{trade['c2']['name']}</b>\n👤 {trade['p2_name']} got <b>{trade['c1']['name']}</b>", parse_mode=ParseMode.HTML)
     except: pass
+
+# --- AI & SYSTEM ---
+async def admin_system_control(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global BOT_SLEEP_MODE
+    user = update.effective_user
+    msg = update.message.text.lower().strip()
+
+    if user.username != "kaminarich": return
+
+    if msg in ["shutdown", "terminate", "suspend"]:
+        if not BOT_SLEEP_MODE:
+            BOT_SLEEP_MODE = True
+            await update.message.reply_text("<b>System Sleeping...</b>", parse_mode=ParseMode.HTML)
+        return
+
+    if any(x in msg for x in ["activate", "wake up"]):
+        if BOT_SLEEP_MODE:
+            BOT_SLEEP_MODE = False
+            await update.message.reply_text("<b>System Online.</b>", parse_mode=ParseMode.HTML)
+        return
+
+async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if BOT_SLEEP_MODE: return
+    user_msg = update.message.text
+    if not user_msg: return
+    user = update.effective_user
+    uid = str(user.id)
+    db = load_data()
+    
+    # Save user data
+    if uid in db["users"]:
+        db["users"][uid]["handle"] = user.username 
+        db["users"][uid]["username"] = user.first_name
+        save_data(db)
+    
+    # AFK Disable Logic
+    if uid in db["users"] and db["users"][uid].get("afk_status"):
+        db["users"][uid]["afk_status"] = False
+        save_data(db)
+        await update.message.reply_text(f"👋 Welcome back <b>{user.first_name}</b>!", parse_mode=ParseMode.HTML)
+
+    # AFK Check Logic
+    afk_targets = set()
+    if update.message.reply_to_message:
+        afk_targets.add(str(update.message.reply_to_message.from_user.id))
+    
+    if update.message.entities:
+        for entity in update.message.entities:
+            target_uid = None
+            if entity.type == MessageEntity.TEXT_MENTION: target_uid = str(entity.user.id)
+            elif entity.type == MessageEntity.MENTION:
+                clean = user_msg[entity.offset:entity.offset + entity.length].replace('@', '')
+                for db_uid, db_data in db["users"].items():
+                    if db_data.get("handle") == clean:
+                        target_uid = db_uid
+                        break
+            if target_uid: afk_targets.add(target_uid)
+
+    for target_id in afk_targets:
+        if target_id == uid: continue 
+        if target_id in db["users"] and db["users"][target_id].get("afk_status"):
+            reason = db["users"][target_id].get("afk_reason", "Busy")
+            name = db["users"][target_id].get("username", "User")
+            await update.message.reply_text(f"💤 <b>{name}</b> is AFK: <i>{reason}</i>", parse_mode=ParseMode.HTML)
+
+    if user_msg.startswith('/'): return
+    
+    is_reply = update.message.reply_to_message and update.message.reply_to_message.from_user.is_bot
+    is_mention = "rairin" in user_msg.lower()
+    
+    if not (is_reply or is_mention): return 
+    
+    if not GROQ_KEYS:
+        await update.message.reply_text("⚠️ No API Keys.")
+        return
+
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    
+    messages = [{"role": "system", "content": SYSTEM_INSTRUCTION}]
+    history = load_chat_history(uid)
+    for h in history: messages.append({"role": h['role'], "content": h['content']})
+    
+    user_handle = f"@{user.username}" if user.username else "NoHandle"
+    messages.append({"role": "user", "content": f"[User: {user_handle}]\n\n{user_msg}"})
+
+    random.shuffle(GROQ_KEYS)
+    response_text = None
+
+    for key in GROQ_KEYS:
+        try:
+            client = Groq(api_key=key)
+            completion = client.chat.completions.create(messages=messages, model="llama-3.3-70b-versatile", temperature=0.7, max_tokens=1000)
+            response_text = completion.choices[0].message.content
+            break
+        except: continue
+
+    if response_text:
+        history.append({"role": "user", "content": user_msg})
+        history.append({"role": "assistant", "content": response_text})
+        save_chat_history(uid, history[-10:])
+        try: await update.message.reply_text(response_text, parse_mode=ParseMode.MARKDOWN)
+        except BadRequest: await update.message.reply_text(response_text) 
+    else:
+        await update.message.reply_text("...")
 
 async def check_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"`{update.effective_chat.id}`", parse_mode=ParseMode.MARKDOWN)
