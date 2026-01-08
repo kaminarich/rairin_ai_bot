@@ -66,15 +66,11 @@ PENDING_TRADES = {}
 BOT_SLEEP_MODE = False
 
 # --- NEKOBOT.XYZ CONFIGURATION ---
-# Daftar Type yang didukung oleh Nekobot.xyz
+# Restricted Whitelist for /hunt and /getbini
 NEKOBOT_TYPES = [
-    # NSFW / EXPLICIT
-    "hentai", "ass", "boobs", "pussy", "paizuri", "pantsu", "lewdneko", 
-    "feet", "hyuri", "hthigh", "hmidriff", "anal", "nakadashi", "blowjob", 
-    "gonewild", "hkitsune", "tentacle", "4k", "hboobs", "yaoipic", "ecchi",
-    
-    # SFW / SAFE
-    "neko", "kemonomimi", "kanna", "holo", "food", "coffee"
+    "nakadashi", "kemonomimi", "paizuri", "neko", "tentacle",
+    "lewdneko", "hyuri", "hthigh", "hmidriff", "hentai",
+    "hboobs", "feet", "coffee", "hkitsune", "holo"
 ]
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -168,17 +164,15 @@ async def fetch_master_source(specific_type=None):
 
     # --- A. MODE HUNT (Specific Type) ---
     if specific_type:
-        query = specific_type.strip().lower().replace(" ", "") # Nekobot biasanya tanpa spasi
+        query = specific_type.strip().lower().replace(" ", "") 
         print(f"🔍 Hunting Type: '{query}'")
 
-        # Cek apakah tipe ada di list kita
+        # STRICT VALIDATION: Only allow types in the whitelist
         if query not in NEKOBOT_TYPES:
-            # Coba cari yang mirip (simple fuzzy)
-            matches = [t for t in NEKOBOT_TYPES if query in t]
-            if matches:
-                query = matches[0] # Ambil yang paling mirip pertama
-            else:
-                return {"status": "error", "msg": f"Type '{query}' not found. Use /tags to see list."}
+            return {
+                "status": "error", 
+                "msg": f"❌ Type '{query}' is not allowed or found.\nPlease check `/tags` for the available list."
+            }
 
         try:
             def do_request():
@@ -198,7 +192,7 @@ async def fetch_master_source(specific_type=None):
     # --- B. MODE GACHA (Random Type) ---
     else:
         try:
-            # Pilih random type dari list
+            # Pilih random type dari list whitelist
             rnd_type = random.choice(NEKOBOT_TYPES)
             
             def do_random():
@@ -227,21 +221,20 @@ def parse_nekobot_item(data, type_name):
     if not img_url: return None
 
     # Nekobot tidak memberikan nama karakter/artist, jadi kita pakai Tipe sebagai nama
-    char_name = type_name.capitalize() # Misal: Hentai, Boobs
+    char_name = type_name.capitalize() 
     
-    # Buat ID palsu dari hash URL biar unik (karena Nekobot ga kasih ID)
-    # Ambil 6 karakter terakhir dari URL sebelum ekstensi
+    # Buat ID palsu dari hash URL biar unik
     try:
         img_id = img_url.split("/")[-1].split(".")[0][-6:]
-        if not img_id.isdigit(): # Kalau ada huruf, biarin string
-            img_id = str(uuid.uuid4().int)[:6] # Fallback random ID angka
+        if not img_id.isdigit(): 
+            img_id = str(uuid.uuid4().int)[:6] 
     except:
         img_id = str(random.randint(1000, 9999))
 
     return {
         "id": img_id,
         "image": img_url,
-        "name": char_name, # Disini nama char diganti jadi Tipe (e.g. "Hentai")
+        "name": char_name, 
         "source": "Nekobot.xyz",
         "link": img_url,
         "status": "Success",
@@ -282,7 +275,7 @@ async def smart_send_photo(update, image_url, caption, loading_msg=None):
         loop = asyncio.get_running_loop()
         success = await loop.run_in_executor(None, lambda: process_image_to_disk(image_url, temp_path))
 
-        if not success: raise Exception("Gagal proses gambar.")
+        if not success: raise Exception("Failed to process image.")
 
         if loading_msg:
             try: await loading_msg.delete()
@@ -326,8 +319,8 @@ async def help_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📚 <b>COMMANDS (Nekobot v1)</b>\n"
         "• /getbini - Random Type\n"
         "• /mybini - Collection\n"
-        "• /hunt [type] - Cari Type (hentai, boobs, etc)\n"
-        "• /tags - Lihat Semua Type\n"
+        "• /hunt [type] - Search Type (hentai, boobs, etc)\n"
+        "• /tags - Show all available types\n"
         "• /bini [ID] - Set Favorite\n"
         "• /battle [ID] - Battle\n"
         "• /swing [MyID] [TargetID] - Trade\n"
@@ -415,8 +408,7 @@ async def list_tags_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await show_tags_page(update, 0)
 
 async def show_tags_page(update, offset):
-    # Gunakan list NEKOBOT_TYPES internal
-    items = sorted(NEKOBOT_TYPES) # Urutkan abjad biar rapi
+    items = sorted(NEKOBOT_TYPES) 
     total = len(items)
     page_size = 15
     
@@ -465,7 +457,7 @@ async def hunt_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if result:
         if result.get("status") == "error":
-            await msg.edit_text(f"❌ {result['msg']}")
+            await msg.edit_text(f"{result['msg']}", parse_mode=ParseMode.MARKDOWN)
             return
         
         cap = (
@@ -506,7 +498,7 @@ async def get_bini(update: Update, context: ContextTypes.DEFAULT_TYPE):
         char = {
             "id": new_id, 
             "api_id": data.get('id'), 
-            "name": data['name'], # Isinya Tipe (e.g Hentai)
+            "name": data['name'], 
             "anime": "Nekobot.xyz", 
             "image": data['image'], 
             "link": data['link'], 
