@@ -142,13 +142,13 @@ async def async_get_request(url, params=None):
     return await loop.run_in_executor(None, lambda: scraper.get(url, params=params, timeout=10))
 
 # ==========================================
-# 1. GACHA & SEARCH LOGIC (FIXED NEKOS V4)
+# 1. GACHA & SEARCH LOGIC (NEKOS V4)
 # ==========================================
 
 async def fetch_master_source(specific_tags=None):
     base_url = "https://api.nekosapi.com/v4"
     headers = {"User-Agent": "RairinBot/1.0"}
-    NSFW_RATINGS = ["safe", "suggestive", "borderline", "explicit"] # FULL RATING
+    NSFW_RATINGS = ["safe", "suggestive", "borderline", "explicit"] 
 
     loop = asyncio.get_running_loop()
 
@@ -171,10 +171,8 @@ async def fetch_master_source(specific_tags=None):
         query = specific_tags.strip()
         print(f"🔍 Validating Tag/Char: '{query}'")
 
-        # Fungsi cari ID Character/Tag
         def search_meta(endpoint, q):
             try:
-                # Cari yang paling mirip (fuzzy search dari API)
                 params = {"search": q, "limit": 1} 
                 r = requests.get(f"{base_url}/{endpoint}", params=params, headers=headers, timeout=5)
                 data = r.json()
@@ -183,22 +181,16 @@ async def fetch_master_source(specific_tags=None):
             except: pass
             return None
 
-        # Cek Characters dan Tags secara paralel
         t_char = loop.run_in_executor(None, lambda: search_meta("characters", query))
         t_tag = loop.run_in_executor(None, lambda: search_meta("tags", query))
         
         res = await asyncio.gather(t_char, t_tag)
-        match = res[0] or res[1] # Prioritas Character, lalu Tag
+        match = res[0] or res[1] 
 
         if match:
-            # === TAG/CHAR KETEMU ===
             print(f"✅ Metadata Found: {match['name']} ({match['type']})")
+            img_params = {"limit": 20, "rating": NSFW_RATINGS, "sort": "random"}
             
-            img_params = {
-                "limit": 20, 
-                "rating": NSFW_RATINGS, # Rating FULL
-                "sort": "random"
-            }
             if match['type'] == 'characters': img_params['character'] = [match['id']]
             elif match['type'] == 'tags': img_params['tags'] = [match['id']]
 
@@ -213,18 +205,15 @@ async def fetch_master_source(specific_tags=None):
                     return await fetch_random_fallback(f"Tag '{match['name']}' exists but no images found.")
             except:
                 return await fetch_random_fallback("Error fetching specific images.")
-        
         else:
-            # === TAG TIDAK KETEMU ===
             print(f"❌ Tag '{query}' not found in API.")
             return await fetch_random_fallback(f"Tag '{query}' not found.")
 
     # --- C. RANDOM MURNI (/GETBINI) ---
     else:
-        return await fetch_random_fallback(None) # None msg artinya normal gacha
+        return await fetch_random_fallback(None) 
 
 async def fetch_random_fallback(fail_message):
-    """Mengambil gambar random murni dan menyisipkan pesan error jika ada"""
     base_url = "https://api.nekosapi.com/v4"
     headers = {"User-Agent": "RairinBot/1.0"}
     loop = asyncio.get_running_loop()
@@ -255,6 +244,7 @@ def parse_nekos_item(item, status="Success"):
 
     img_id = item.get("id", "Unknown")
 
+    # Nama Karakter
     char_name = "Unknown"
     if "characters" in item and item["characters"]:
         try:
@@ -263,6 +253,7 @@ def parse_nekos_item(item, status="Success"):
             elif isinstance(c, int): char_name = f"Character ID: {c}" 
         except: pass
     
+    # Nama Artist
     artist_name = "NekosAPI"
     if "artist" in item and item["artist"]:
         try:
@@ -270,14 +261,22 @@ def parse_nekos_item(item, status="Success"):
             if isinstance(a, dict): artist_name = a.get("name", "NekosAPI")
         except: pass
 
+    # --- LOGIC NAMA TAG JIKA KARAKTER TIDAK DIKETAHUI ---
     if char_name == "Unknown":
-        char_name = "Random Waifu"
-        tags = item.get("tags", [])
-        if isinstance(tags, list):
-            for t in tags:
-                if isinstance(t, dict) and "original" in t.get("name", "").lower():
-                    char_name = "Original Character"
-                    break
+        tags_list = item.get("tags", [])
+        # Tags biasanya list of objects di endpoint images
+        if tags_list and isinstance(tags_list, list):
+            # Ambil tag pertama yang ada
+            first_tag = tags_list[0]
+            if isinstance(first_tag, dict):
+                # Format: "Cat Girl" bukan "cat_girl"
+                char_name = first_tag.get("name", "").replace("_", " ").title()
+            elif isinstance(first_tag, str):
+                char_name = first_tag.replace("_", " ").title()
+        
+        # Jika masih kosong juga
+        if char_name == "Unknown" or char_name == "":
+            char_name = "Random Waifu"
 
     return {
         "id": img_id,
@@ -349,7 +348,15 @@ async def smart_send_photo(update, image_url, caption, loading_msg=None):
 # ==========================================
 
 async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🌸 <b>Rairin Online!</b>\n/getbini - Gacha\n/hunt [tag] - Search", parse_mode=ParseMode.HTML)
+    txt = (
+        "👋 <b>Hi, I'm Rairin!</b>\n"
+        "I am your personal AI Assistant.\n\n"
+        "💡 <b>Need Help?</b>\n"
+        "• Type <code>/help</code> to see what I can do.\n"
+        "• Type <code>/report</code> if you find any bugs.\n\n"
+        "<i>Let's chat or play gacha!</i>"
+    )
+    await update.message.reply_text(txt, parse_mode=ParseMode.HTML)
 
 async def help_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = (
@@ -357,6 +364,7 @@ async def help_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /getbini - Random Waifu\n"
         "• /mybini - Collection\n"
         "• /hunt [name] - Cari Character/Tag\n"
+        "• /tags - Lihat Daftar Tag\n"
         "• /bini [ID] - Set Favorite\n"
         "• /battle [ID] - Battle\n"
         "• /swing [MyID] [TargetID] - Trade\n"
@@ -395,7 +403,6 @@ async def report_bug(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Use: `/report msg`", parse_mode=ParseMode.MARKDOWN)
         return
     rep_id = str(uuid.uuid4())[:6]
-    # Path untuk report local
     if not os.path.exists('database'): os.makedirs('database')
     file_path = 'database/reports.json'
     reports = []
@@ -439,6 +446,72 @@ async def feedback_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text("🗑️ Cleared.")
     elif q.data == "fb_down":
         if os.path.exists(file_path): await q.message.reply_document(document=open(file_path, 'rb'), caption="Log")
+
+# --- TAGS COMMANDS (NEW) ---
+async def list_tags_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await show_tags_page(update, 0)
+
+async def show_tags_page(update, offset):
+    try:
+        url = "https://api.nekosapi.com/v4/tags"
+        params = {"limit": 10, "offset": offset}
+        headers = {"User-Agent": "RairinBot/1.0"}
+        
+        loop = asyncio.get_running_loop()
+        r = await loop.run_in_executor(None, lambda: requests.get(url, params=params, headers=headers, timeout=10))
+        data = r.json()
+        items = data.get("items", []) if isinstance(data, dict) else data
+        
+        if not items:
+            text = "⚠️ No tags found or end of list."
+            if update.callback_query:
+                await update.callback_query.answer(text)
+            else:
+                await update.message.reply_text(text)
+            return
+
+        msg_txt = f"🏷️ <b>AVAILABLE TAGS (Page {offset // 10 + 1})</b>\n\n"
+        for item in items:
+            name = item.get('name', 'Unknown')
+            desc = item.get('description', 'No description')
+            if desc and len(desc) > 30: desc = desc[:30] + "..."
+            msg_txt += f"• <code>{name}</code> - {desc}\n"
+        
+        msg_txt += "\n<i>Use /hunt [tag_name] to search.</i>"
+
+        # Buttons
+        btns = []
+        if offset >= 10:
+            btns.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"tags_page_{offset - 10}"))
+        
+        # Check if there might be more (simple heuristic, if full page returned)
+        if len(items) == 10:
+            btns.append(InlineKeyboardButton("Next ➡️", callback_data=f"tags_page_{offset + 10}"))
+            
+        kb = InlineKeyboardMarkup([btns])
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(msg_txt, reply_markup=kb, parse_mode=ParseMode.HTML)
+        else:
+            await update.message.reply_text(msg_txt, reply_markup=kb, parse_mode=ParseMode.HTML)
+
+    except Exception as e:
+        print(f"Tags Error: {e}")
+        err_text = "❌ Failed to fetch tags."
+        if update.callback_query:
+            await update.callback_query.edit_message_text(err_text)
+        else:
+            await update.message.reply_text(err_text)
+
+async def tags_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    try: await q.answer()
+    except: pass
+    
+    data = q.data
+    if data.startswith("tags_page_"):
+        offset = int(data.split("_")[2])
+        await show_tags_page(update, offset)
 
 # --- GACHA HANDLERS ---
 async def hunt_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -793,6 +866,9 @@ async def swing_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try: await q.edit_message_text(f"🤝 <b>TRADE SUCCESS!</b>\n\n👤 {trade['p1_name']} got <b>{trade['c2']['name']}</b>\n👤 {trade['p2_name']} got <b>{trade['c1']['name']}</b>", parse_mode=ParseMode.HTML)
     except: pass
 
+async def check_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(f"`{update.effective_chat.id}`", parse_mode=ParseMode.MARKDOWN)
+
 # --- AI & SYSTEM ---
 async def admin_system_control(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global BOT_SLEEP_MODE
@@ -897,9 +973,6 @@ async def handle_ai_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("...")
 
-async def check_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"`{update.effective_chat.id}`", parse_mode=ParseMode.MARKDOWN)
-
 if __name__ == '__main__':
     print("🚀 Building Bot Application...")
     
@@ -923,12 +996,16 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler('report', report_bug))
     app.add_handler(CommandHandler('feedback', feedback_list))
     
+    # NEW: Tags Command
+    app.add_handler(CommandHandler('tags', list_tags_command))
+    
     # Callback Handlers
     app.add_handler(CallbackQueryHandler(bini_pagination, pattern='^bini_page_'))
     app.add_handler(CallbackQueryHandler(battle_callback, pattern='^(accept_battle|sel_)'))
     app.add_handler(CallbackQueryHandler(divorce_callback, pattern='^div_'))
     app.add_handler(CallbackQueryHandler(swing_callback, pattern='^swing_'))
     app.add_handler(CallbackQueryHandler(feedback_callback, pattern='^fb_'))
+    app.add_handler(CallbackQueryHandler(tags_callback, pattern='^tags_page_'))
     
     # Message Handlers
     app.add_handler(MessageHandler(filters.Regex(r'^/mybini\d+$'), my_bini_detail))
