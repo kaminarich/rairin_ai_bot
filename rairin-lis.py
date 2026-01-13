@@ -9,7 +9,7 @@ import sys
 import cloudscraper
 import urllib3
 import requests
-import hashlib # <--- PENTING: Untuk verifikasi lisensi
+import hashlib 
 from io import BytesIO 
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -56,10 +56,16 @@ else:
     GROQ_KEYS = []
     print("⚠️ WARNING: No Groq Keys found.")
 
-# --- LICENSE CONFIGURATION ---
-# Pastikan SALT ini SAMA PERSIS dengan yang di RUST!
-SECRET_SALT = os.getenv("SECRET_SALT", "RaiRin_Project_2026_Verif_Secure_@!!#")
-# Nama file ZIP module yang sudah kamu upload ke VPS (taruh satu folder dengan bot)
+# --- LICENSE CONFIGURATION (SECURE FIX) ---
+
+SECRET_SALT = os.getenv("SECRET_SALT")
+
+if not SECRET_SALT:
+    print("❌ CRITICAL ERROR: 'SECRET_SALT' not found in .env!")
+    print("   Please add SECRET_SALT=... to your .env file.")
+    sys.exit(1)
+
+# Nama file ZIP module yang sudah kamu upload ke VPS
 MODULE_FILE_NAME = "RaiRin-AI-Module.zip"
 MODULE_FILE_PATH = base_dir / MODULE_FILE_NAME
 
@@ -260,8 +266,7 @@ async def claim_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
     android_id = context.args[0].strip()
     user_key = context.args[1].strip().upper()
 
-    # 2. Proses Verifikasi (Algoritma Matematika)
-    #    Ini harus sama persis dengan logic di Rust & Python Keygen
+    # 2. Proses Verifikasi
     try:
         combined = android_id + SECRET_SALT
         hash_object = hashlib.sha256(combined.encode())
@@ -269,11 +274,10 @@ async def claim_license(update: Update, context: ContextTypes.DEFAULT_TYPE):
         expected_key = hex_dig[0:16].upper()
 
         if user_key == expected_key:
-            # 3. Jika Valid -> Kirim File
+            # 3. Jika Valid
             if os.path.exists(MODULE_FILE_PATH):
                 await update.message.reply_text("✅ <b>Lisensi Valid!</b>\n<i>Mengirim module RaiRin-AI...</i>", parse_mode=ParseMode.HTML)
                 
-                # Kirim file dari VPS Local Storage
                 await update.message.reply_document(
                     document=open(MODULE_FILE_PATH, 'rb'),
                     caption=f"📦 <b>RaiRin Module v2.0</b>\n🔑 Licensed to: <code>{android_id}</code>",
@@ -294,7 +298,7 @@ async def set_afk(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(user.id)
     db = load_data()
     if uid not in db["users"]: 
-        db["users"][uid] = {"username": user.first_name, "handle": user.username, "collection": []}
+        db["users"][uid] = {"username": user.first_name, "handle": user.username, "collection": [], "last_claim": None}
     db["users"][uid]["afk_status"] = True
     db["users"][uid]["afk_reason"] = reason
     save_data(db)
@@ -378,7 +382,7 @@ async def tags_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await show_tags_page(update, offset)
         except: pass
 
-# --- GACHA HANDLERS ---
+# --- GACHA HANDLERS (UPDATED COOLDOWN) ---
 async def hunt_images(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keywords = " ".join(context.args)
     if not keywords:
@@ -398,12 +402,18 @@ async def get_bini(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = load_data()
     now = datetime.now()
     if uid not in db["users"]: db["users"][uid] = {"username": user.first_name, "handle": user.username, "collection": [], "last_claim": None}
+    
+    # --- COOLDOWN COUNTER (2 HOURS) ---
     last = db["users"][uid].get("last_claim")
     if last:
         diff = now - datetime.fromisoformat(last)
-        if diff < timedelta(hours=5):
-            await update.message.reply_text("⏳ Cooldown.", parse_mode=ParseMode.HTML)
+        if diff < timedelta(hours=2): 
+            rem = timedelta(hours=2) - diff
+            hours = int(rem.total_seconds() // 3600)
+            minutes = int((rem.total_seconds() % 3600) // 60)
+            await update.message.reply_text(f"⏳ <b>Cooldown!</b>\nCome back in: <b>{hours}h {minutes}m</b>.", parse_mode=ParseMode.HTML)
             return
+
     msg = await update.message.reply_text("✨ <i>Summoning...</i>", parse_mode=ParseMode.HTML)
     data = await fetch_master_source()
     if data and data.get("status") != "error":
@@ -703,8 +713,8 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler('tags', list_tags_command))
     
     # NEW HANDLER
-    app.add_handler(CommandHandler('claim', claim_license)) # <--- Claim module
-    app.add_handler(CommandHandler('klaim', claim_license)) # <--- Alias indo
+    app.add_handler(CommandHandler('claim', claim_license)) 
+    app.add_handler(CommandHandler('klaim', claim_license))
 
     # Callbacks & Messages
     app.add_handler(CallbackQueryHandler(bini_pagination, pattern='^bini_page_'))
